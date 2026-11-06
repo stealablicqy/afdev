@@ -7,6 +7,10 @@
   navigation with index.html and the correct content type.
 
   Open: https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/public/index.svg
+
+  This document owns the tab title and favicon, so the tab cloak lives here as
+  well as in the app frame: a saved preset is painted before the frame loads,
+  and every later change arrives over postMessage.
 -->
 <svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="position: fixed; inset: 0; background: #0b0c10;">
   <title>Math | Practice and Lessons</title>
@@ -21,6 +25,68 @@
     var BASE = new URL("./", location.href).href;
     var frame = document.getElementById("afFrame");
     var msg = document.getElementById("afMsg");
+
+    // Mirror of js/cloak.js presets, kept here so a saved cloak paints on the
+    // first frame instead of waiting for the app to boot inside the iframe.
+    var CLOAKS = {
+      classroom: { title: "Classes", color: "#1a73e8", letter: "C" },
+      docs: { title: "Untitled document - Google Docs", color: "#4285f4", letter: "D" },
+      ixl: { title: "IXL | Math, Language Arts, Science, Social Studies", color: "#ff8b00", letter: "I" },
+      drive: { title: "My Drive - Google Drive", color: "#0f9d58", letter: "\u25a4" },
+      quizlet: { title: "Flashcards, learning tools and textbook solutions | Quizlet", color: "#4255ff", letter: "Q" },
+      canvas: { title: "Dashboard", color: "#e0342b", letter: "\u25c8" }
+    };
+
+    var baseTitle = document.title;
+    var baseIcon = "";
+
+    function iconData(preset) {
+      var svg =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
+        '<rect width="64" height="64" rx="14" fill="' + preset.color + '"/>' +
+        '<text x="32" y="44" font-family="Arial,Helvetica,sans-serif" font-size="34"' +
+        ' font-weight="700" fill="#ffffff" text-anchor="middle">' + preset.letter + '</text></svg>';
+      return "data:image/svg+xml," + encodeURIComponent(svg);
+    }
+
+    function setIcon(href) {
+      var link = document.querySelector('link[rel="icon"]');
+      if (!link) {
+        link = document.createElementNS("http://www.w3.org/1999/xhtml", "link");
+        link.setAttribute("rel", "icon");
+        document.documentElement.appendChild(link);
+      }
+      link.setAttribute("type", "image/svg+xml");
+      link.setAttribute("href", href);
+    }
+
+    function paint(id) {
+      var preset = id && CLOAKS[id];
+      document.title = preset ? preset.title : baseTitle;
+      setIcon(preset ? iconData(preset) : baseIcon || BASE + "assets/falcon.png");
+    }
+
+    try {
+      baseIcon = localStorage.getItem("af.cloak.baseIcon") || "";
+      if (!baseIcon) {
+        baseIcon = BASE + "assets/falcon.png";
+        localStorage.setItem("af.cloak.baseIcon", baseIcon);
+      }
+      paint(localStorage.getItem("af.cloak.preset"));
+    } catch (error) {
+      /* storage blocked: default title stands */
+    }
+
+    addEventListener("message", function (event) {
+      var data = event.data;
+      if (!data || data.af !== "cloak") return;
+      if (data.title) {
+        document.title = data.title;
+        if (data.icon) setIcon(data.icon);
+      } else {
+        paint(null);
+      }
+    });
 
     function say(text) {
       msg.textContent = text || "";
