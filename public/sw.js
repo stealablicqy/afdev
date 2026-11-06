@@ -1,6 +1,6 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-v14';
+const CACHE = 'af-hub-v18';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css', './css/stellar.css',
