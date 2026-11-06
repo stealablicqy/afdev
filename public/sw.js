@@ -1,6 +1,6 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-desync-inspired-v10';
+const CACHE = 'af-hub-desync-inspired-v11';
 const SHELL = [
   './', './index.html', './css/app.css', './css/desync-inspired.css', './css/af-music.css','./css/browser.css',
   './js/supabase-client.js', './js/db.js', './js/games.js', './js/music.js', './js/app.js',
