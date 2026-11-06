@@ -18,7 +18,16 @@ const SJ_FILES = {
 // A static CDN cannot terminate a proxy hop, so the Wisp relay is external.
 // Override per-device from Settings or localStorage when this host is filtered.
 const WISP_KEY = "af.go.wisp";
-const WISP_DEFAULT = "wss://wisp.mercurywork.shop/";
+const WISP_DEFAULT = "wss://anura.pro/wisp/";
+
+// Public relays come and go, and a stale default is the difference between a
+// working proxy and a dead one. Probed in order after the primary refuses; the
+// first socket that opens becomes the runtime relay and is remembered for the tab.
+const WISP_FALLBACKS = [
+	"wss://wisp.mercurywork.shop/",
+	"wss://wisp.quartz.rip/",
+	"wss://wisp.rhodes.rip/",
+];
 
 function readWispUrl() {
 	let stored = "";
@@ -31,6 +40,13 @@ function readWispUrl() {
 }
 
 let WISP_URL = readWispUrl();
+// Set when a probe rotated off a dead primary, so initTransport and re-seats keep
+// using the relay that actually answered instead of re-reading the dead default.
+let WISP_ROTATED = "";
+
+function activeWispUrl() {
+	return WISP_ROTATED || readWispUrl();
+}
 
 // Bump when the bare-mux worker changes: the browser caches SharedWorker scripts
 // by URL, and a stale one breaks every transport with an importScripts error.
@@ -601,13 +617,68 @@ function probeWisp() {
 			} catch {
 				// already closed
 			}
-			const verdict = { state: ok ? "ok" : "bad", ms: Math.round(performance.now() - started), note: note || "", at: Date.now() };
+			const verdict = { state: ok ? "ok" : "bad", ms: Math.round(performance.now() - started), note: note || "", at: Date.now(), url: WISP_URL };
 			state.health.wisp = verdict;
 			resolve(verdict);
 		};
-		const timer = setTimeout(() => done(false, "handshake timeout"), 4000);
+		const timer = setTimeout(() => done(false, "handshake timeout"), 6000);
 		try {
 			socket = new WebSocket(WISP_URL);
+		} catch (error) {
+			return done(false, String(error?.message || error));
+		}
+		socket.addEventListener("open", () => done(true, "socket open"));
+		socket.addEventListener("error", () => done(false, "socket refused"));
+	});
+}
+
+// A refused primary is not a dead proxy: rotate through the public relays and
+// keep the first one that completes a handshake. Only a user-set relay is
+// respected verbatim, so a Settings override never gets silently swapped.
+async function resolveWisp() {
+	const verdict = await probeWisp();
+	if (verdict.state === "ok") return verdict;
+
+	let stored = "";
+	try {
+		stored = localStorage.getItem(WISP_KEY) || "";
+	} catch {
+		// storage blocked: treat as no override
+	}
+	if (/^wss?:\/\//i.test(stored)) return verdict;
+
+	for (const relay of WISP_FALLBACKS) {
+		const probe = await probeWispAt(relay);
+		if (probe.state === "ok") {
+			WISP_URL = relay;
+			WISP_ROTATED = relay;
+			state.health.wisp = { ...probe, url: relay, note: "rotated to " + new URL(relay).host };
+			renderDrawer();
+			return state.health.wisp;
+		}
+	}
+	return verdict;
+}
+
+function probeWispAt(url) {
+	return new Promise((resolve) => {
+		const started = performance.now();
+		let socket = null;
+		let settled = false;
+		const done = (ok, note) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			try {
+				socket?.close();
+			} catch {
+				// already closed
+			}
+			resolve({ state: ok ? "ok" : "bad", ms: Math.round(performance.now() - started), note: note || "", at: Date.now() });
+		};
+		const timer = setTimeout(() => done(false, "handshake timeout"), 6000);
+		try {
+			socket = new WebSocket(url);
 		} catch (error) {
 			return done(false, String(error?.message || error));
 		}
@@ -652,7 +723,7 @@ async function initTransport() {
 	// assets loses the worker's reply often enough to be worth a retry, and a
 	// cache-busted worker path is the only way to get a fresh SharedWorker.
 	const attempts = [BAREMUX_WORKER, `${BAREMUX_WORKER}&retry=${Date.now()}`];
-	WISP_URL = readWispUrl();
+	WISP_URL = activeWispUrl();
 	let lastError = null;
 
 	for (const workerPath of attempts) {
@@ -1898,6 +1969,17 @@ async function boot() {
 	// the worker import is 1.7 MB and losing that race costs a worker restart.
 	if (document.readyState !== "complete") {
 		await new Promise((resolve) => window.addEventListener("load", resolve, { once: true }));
+	}
+
+	// The transport binds its relay once, so a dead primary has to be replaced
+	// before the worker starts — rotating afterwards leaves every engine pointed
+	// at a socket that never opened.
+	try {
+		stage("wisp:begin");
+		await resolveWisp();
+		stage("wisp:done", new URL(WISP_URL).host);
+	} catch (error) {
+		stage("wisp:failed", String(error?.message || error));
 	}
 
 	let transportError = null;
