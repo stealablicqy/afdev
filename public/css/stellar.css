@@ -79,12 +79,9 @@ body::after {
   100% { transform: translate3d(0, 0, 0); }
 }
 
-/* The app sits above the sky. */
-.app-shell,
-.mini-player,
-.toast-stack,
-.dialog-layer,
-.privacy-cover {
+/* The app sits above the sky. Fixed-position layers keep their own positioning
+   so the player bar stays pinned and dialogs stay centred. */
+.app-shell {
   position: relative;
   z-index: 10;
 }

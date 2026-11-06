@@ -57,6 +57,18 @@
   function audiusStream(id) {
     return `${AUDIUS}/tracks/${encodeURIComponent(id)}/stream?app_name=${APP_NAME}`;
   }
+  // The Audius API returns `stream` as an object on some endpoints and a string
+  // on others. Anything that is not an absolute http(s) URL cannot be assigned
+  // to HTMLMediaElement.src — it stringifies to "[object Object]" and the
+  // element fails with MEDIA_ERR_SRC_NOT_SUPPORTED.
+  const isHttpUrl = (value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+  function streamFor(track) {
+    if (!track) return '';
+    if (isHttpUrl(track.stream)) return track.stream.trim();
+    const id = String(track.id || '');
+    if (id.startsWith('yt:') || id.startsWith('itunes:')) return '';
+    return id ? audiusStream(id) : '';
+  }
 
   function normalize(raw) {
     const user = raw.user || raw.user_data || {};
@@ -71,7 +83,7 @@
       id, title, artist, artistId: String(user.id || raw.user_id || raw.artistId || ''), artistHandle: String(user.handle || raw.artistHandle || ''),
       artwork, duration: Number(raw.duration || 0), genre: String(raw.genre || ''),
       playCount: Number(raw.play_count ?? raw.playCount ?? 0), permalink,
-      stream: raw.stream || (isItunes ? '' : audiusStream(id)),
+      stream: isHttpUrl(raw.stream) ? raw.stream.trim() : (isItunes ? '' : audiusStream(id)),
       isStreamable: raw.is_streamable !== false && raw.isStreamable !== false && String(raw.is_streamable ?? raw.isStreamable ?? 'true') !== 'false',
       isStreamGated: raw.is_stream_gated === true || raw.isStreamGated === true,
       parentalWarningType: String(raw.parental_warning_type || raw.parentalWarningType || '').toLowerCase(),
@@ -818,7 +830,9 @@
       updatePlayer();
     } else {
       if (ytFrame) ytCommand('pauseVideo');
-      audio.src=track.stream;
+      const src = streamFor(track);
+      if (!src) { AF.toast('No stream URL for this track. Pick another result.','error'); document.body.classList.remove('music-playing'); updatePlayer(); return; }
+      audio.src=src;
       audio.load(); updatePlayer();
       try { await audio.play(); updatePlayer(); }
       catch (error) { AF.toast('Playback could not start. Press play again or choose another track.','error'); }
