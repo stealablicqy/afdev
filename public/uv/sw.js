@@ -1,9 +1,7 @@
 /*global Ultraviolet, UVServiceWorker, __uv$config*/
-// Relative imports keep the worker valid under a CDN subdirectory. The SW lives
-// at <base>/uv/sw.js, so every sibling resolves with "./".
-importScripts("./uv.bundle.js");
-importScripts("./uv.config.js");
-importScripts(__uv$config.sw || "./uv.sw.js");
+importScripts("/uv/uv.bundle.js");
+importScripts("/uv/uv.config.js");
+importScripts(__uv$config.sw || "/uv/uv.sw.js");
 
 const ultraviolet = new UVServiceWorker();
 

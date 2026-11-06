@@ -1,12 +1,12 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-v13';
+const CACHE = 'af-hub-v14';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
-  './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css',
+  './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css', './css/stellar.css',
   './js/supabase-client.js', './js/db.js', './js/games-catalog.js', './js/games.js',
-  './js/music.js', './js/cloak.js', './js/cloak-ui.js', './js/app.js',
-  './assets/falcon.png', './assets/favicon.png', './assets/af-mark.svg'
+  './js/music.js', './js/movies-catalog.js', './js/cloak.js', './js/cloak-ui.js', './js/stellar.js', './js/app.js',
+  './assets/logo.svg', './assets/favicon.png', './assets/af-mark.svg'
 ];
 const SHIELD_KEY = new URL('__afhub_shield_state__', self.registration.scope).href;
 const TRACKER_HOSTS = [

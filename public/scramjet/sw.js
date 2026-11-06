@@ -1,7 +1,5 @@
 /*global $scramjetLoadWorker*/
-// Relative import: the hub runs from a CDN subdirectory, so a root-absolute
-// "/scramjet/scramjet.all.js" resolves to the CDN origin root and 404s.
-importScripts("./scramjet.all.js");
+importScripts("/scramjet/scramjet.all.js");
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();

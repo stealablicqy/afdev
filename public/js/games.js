@@ -7,10 +7,22 @@
   const U = window.AFUtil;
   const source = Array.isArray(window.AF_GAMES) ? window.AF_GAMES : [];
 
+  // Catalog paths are written relative to the site root (`assets/covers/…`),
+  // but the hub is served from a subpath, so they have to be resolved against
+  // the document base or every cover 404s and the grid falls back to initials.
+  const artBase = new URL('.', document.baseURI).href;
+  const resolveArt = value => {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (/^(https?:|data:|\/\/)/i.test(raw)) return raw;
+    try { return new URL(raw.replace(/^\.?\//, ''), artBase).href; }
+    catch { return ''; }
+  };
+
   const games = source.map(entry => ({
     id: entry.id,
     title: entry.name,
-    art: entry.img,
+    art: resolveArt(entry.img),
     category: entry.cat,
     url: entry.url,
     description: entry.desc,
@@ -29,7 +41,6 @@
     other: 'Other'
   };
 
-  const imageFallback = 'assets/falcon.png';
   const byId = new Map(games.map(g => [g.id, g]));
   let activeCleanup = null;
 
@@ -58,10 +69,25 @@
       .map(([cat, count]) => ({ cat, count, label: label(cat) }));
   }
 
+  function hueFor(id) {
+    let h = 0;
+    const text = String(id || 'af');
+    for (let i = 0; i < text.length; i += 1) h = (h * 31 + text.charCodeAt(i)) % 360;
+    return h;
+  }
+
+  function initials(title) {
+    const words = String(title || '').replace(/[^A-Za-z0-9 ]/g, ' ').trim().split(/\s+/).filter(Boolean);
+    const letters = words.slice(0, 2).map(w => w[0]).join('');
+    return (letters || 'AF').toUpperCase();
+  }
+
   function card(game) {
     const fav = isFav(game.id);
+    const hue = hueFor(game.id);
+    const art = `${game.art ? `<img src="${U.esc(game.art)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ''}`;
     return `<article class="library-card">
-      <div class="library-art"><img src="${U.esc(game.art || imageFallback)}" alt="" loading="lazy" decoding="async" onerror="this.onerror=null;this.src='${imageFallback}'"><span class="library-tag">${U.esc(label(game.category))}</span></div>
+      <div class="library-art"><div class="af-art-tile" style="background:linear-gradient(150deg,hsl(${hue} 70% 44%),hsl(${(hue + 52) % 360} 66% 20%))">${U.esc(initials(game.title))}</div>${art}<span class="library-tag">${U.esc(label(game.category))}</span></div>
       <div class="library-card-body"><div class="library-card-title"><strong>${U.esc(game.title)}</strong><button class="icon-btn fav-toggle ${fav ? 'is-fav' : ''}" data-action="game-favorite" data-id="${U.esc(game.id)}" aria-label="${fav ? 'Remove from' : 'Add to'} favorites">${fav ? '&#9829;' : '&#9825;'}</button></div>
       <p>${U.esc(game.description)}</p><div class="card-actions"><button class="btn btn-primary btn-sm" data-action="game-launch" data-id="${U.esc(game.id)}">Play &#8599;</button></div></div></article>`;
   }
