@@ -166,7 +166,18 @@
     const data=await res.json().catch(()=>null);
     const answer=data&&(data.choices?.[0]?.message?.content||data.choices?.[0]?.text||data.response);
     if(!answer)throw new Error('empty answer');
-    return String(answer).trim();
+    return cleanAnswer(answer);
+  }
+  // Some free lanes return raw chat-template frames (`<minimax:tool_call>`) and
+  // the model's own narration after the answer. Everything from the first frame
+  // tag on is scaffolding, not reply, so it is cut before the message renders.
+  function cleanAnswer(raw){
+    let text=String(raw||'');
+    const cut=text.search(/<[a-z0-9_-]+:[a-z0-9_-]+[\s>/]/i);
+    if(cut>0)text=text.slice(0,cut);
+    text=text.replace(/<\|[^|]{0,40}\|>/g,' ').replace(/<\/?[a-z0-9_-]+:[^>]{0,200}>/gi,' ');
+    text=text.replace(/^\s*(assistant|system|model)\s*:\s*/i,'');
+    return text.replace(/[ \t]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
   }
   async function aiRequest(messages){
     const preferred=aiLane();
