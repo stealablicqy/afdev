@@ -675,12 +675,19 @@
     document.getElementById('afmNewFromPick')?.addEventListener('click',()=>{AF.closeDialog();createPlaylist();});
   }
   /* ---- YouTube engine ---------------------------------------------------
-     Mainstream rows carry a `yt:<videoId>` id. They play through a hidden
-     IFrame using YouTube's postMessage API: no API script, no key, and the
-     frame is parked off-screen so the UI never has to host it. */
+     Mainstream rows carry a `yt:<videoId>` id. They play through YouTube's
+     official IFrame API, which owns the postMessage handshake, the state
+     machine and the autoplay retries. The old engine parked the frame at
+     left:-9999px with opacity:0; Chrome treats that as a non-visible document
+     and rejects every autoplay request inside it, so the player reported
+     "playing" while producing no audio. The host below is 2x2, still inside
+     the viewport, and at opacity .01 — visible by every heuristic that
+     matters, invisible to the eye. */
   let ytFrame = null;
   let ytHost = null;
-  let ytPlayerId = '';
+  let ytPlayer = null;
+  let ytApiPromise = null;
+  let ytPlayerId = 'afyt' + Math.random().toString(36).slice(2, 8);
   let ytVideoId = '';
   let ytState = -1;
   let ytTime = 0;
@@ -688,34 +695,72 @@
   let ytVolume = 80;
 
   function ytActive() {
-    return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && ytFrame);
+    return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
+  }
+
+  function loadYTAPI() {
+    if (ytApiPromise) return ytApiPromise;
+    ytApiPromise = new Promise((resolve, reject) => {
+      if (window.YT && window.YT.Player) return resolve(window.YT);
+      const previous = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        try { if (typeof previous === 'function') previous(); } catch {}
+        resolve(window.YT);
+      };
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.onerror = () => reject(new Error('youtube iframe api blocked'));
+      document.head.appendChild(script);
+      setTimeout(() => {
+        if (window.YT && window.YT.Player) resolve(window.YT);
+        else reject(new Error('youtube iframe api timeout'));
+      }, 12000);
+    });
+    return ytApiPromise;
   }
 
   function ensureYT() {
-    if (ytFrame && document.body.contains(ytFrame)) return ytFrame;
+    if (ytHost && document.body.contains(ytHost)) return ytHost;
     ytHost = document.createElement('div');
     ytHost.id = 'afYtHost';
     ytHost.setAttribute('aria-hidden', 'true');
-    ytHost.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
-    ytFrame = document.createElement('iframe');
-    ytFrame.id = 'afYtFrame';
-    ytFrame.title = 'Audio engine';
-    ytFrame.allow = 'autoplay; encrypted-media; picture-in-picture';
-    ytFrame.setAttribute('referrerpolicy', 'no-referrer');
-    ytHost.appendChild(ytFrame);
+    ytHost.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;overflow:hidden;opacity:.01;pointer-events:none;z-index:-1';
     document.body.appendChild(ytHost);
-    ytPlayerId = 'afyt' + Math.random().toString(36).slice(2, 8);
-    return ytFrame;
+    return ytHost;
   }
 
   function ytPost(payload) {
     try { ytFrame?.contentWindow?.postMessage(JSON.stringify(payload), '*'); } catch {}
   }
   function ytCommand(func, args = []) {
+    if (ytPlayer && typeof ytPlayer[func] === 'function') {
+      try { ytPlayer[func](...args); return; } catch {}
+    }
     ytPost({ event: 'command', func, args, id: ytPlayerId, channel: 'widget' });
   }
   function ytHandshake() {
     ytPost({ event: 'listening', id: ytPlayerId, channel: 'widget' });
+  }
+
+  // An unmuted playVideo() is still gated behind user activation in some
+  // browsers. Start muted — always permitted — then lift the mute once the
+  // player reports PLAYING so the audio actually reaches the speakers.
+  function ytPlay() {
+    if (!ytPlayer || typeof ytPlayer.playVideo !== 'function') return;
+    try { ytPlayer.playVideo(); } catch {}
+    setTimeout(() => {
+      let state = -1;
+      try { state = ytPlayer.getPlayerState(); } catch {}
+      if (state === 1) {
+        try { ytPlayer.unMute(); ytPlayer.setVolume(ytVolume); } catch {}
+        return;
+      }
+      try { ytPlayer.mute(); ytPlayer.playVideo(); } catch {}
+      setTimeout(() => {
+        try { ytPlayer.unMute(); ytPlayer.setVolume(ytVolume); ytPlayer.playVideo(); } catch {}
+      }, 800);
+    }, 700);
   }
 
   function ytLoad(videoId) {
@@ -724,19 +769,52 @@
     ytState = -1;
     ytTime = 0;
     ytDuration = 0;
-    const origin = encodeURIComponent(location.origin || 'https://localhost');
-    ytFrame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&enablejsapi=1&playsinline=1&rel=0&origin=${origin}`;
-    // The frame drops its first listening event while it warms up, so the
-    // handshake repeats for a few seconds instead of once.
-    let tries = 0;
-    const beat = setInterval(() => {
-      ytHandshake();
-      ytCommand('setVolume', [ytVolume]);
-      tries += 1;
-      if (tries > 24) clearInterval(beat);
-    }, 250);
-    setTimeout(() => ytCommand('playVideo'), 900);
-    setTimeout(() => ytCommand('playVideo'), 2400);
+    loadYTAPI().then((YT) => {
+      if (!YT || typeof YT.Player !== 'function') throw new Error('player unavailable');
+      if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
+        try { ytPlayer.loadVideoById(videoId); ytPlay(); return; } catch {}
+      }
+      if (ytPlayer) { try { ytPlayer.destroy(); } catch {} ytPlayer = null; }
+      ytHost.innerHTML = '';
+      const mount = document.createElement('div');
+      ytHost.appendChild(mount);
+      ytPlayer = new YT.Player(mount, {
+        width: '2',
+        height: '2',
+        videoId,
+        playerVars: {
+          autoplay: 1, playsinline: 1, rel: 0, controls: 0,
+          disablekb: 1, modestbranding: 1, origin: location.origin
+        },
+        events: {
+          onReady: () => {
+            try { ytPlayer.setVolume(ytVolume); } catch {}
+            ytPlay();
+          },
+          onStateChange: (event) => applyYtState(Number(event.data)),
+          onError: (event) => {
+            console.warn('youtube player error', event && event.data);
+            AF.toast('This track cannot be embedded. Pick another result.', 'error');
+            applyYtState(2);
+          }
+        }
+      });
+      ytFrame = (ytPlayer.getIframe && ytPlayer.getIframe()) || null;
+    }).catch((error) => {
+      // The API host is blocked or slow: fall back to the plain embed so the
+      // row at least produces a frame and the message bridge can drive it.
+      console.warn('youtube iframe api fallback:', error && error.message);
+      const origin = encodeURIComponent(location.origin || 'https://localhost');
+      const frame = document.createElement('iframe');
+      frame.id = 'afYtFrame';
+      frame.title = 'Audio engine';
+      frame.allow = 'autoplay; encrypted-media; picture-in-picture';
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&enablejsapi=1&playsinline=1&rel=0&origin=${origin}`;
+      ytHost.innerHTML = '';
+      ytHost.appendChild(frame);
+      ytFrame = frame;
+    });
   }
 
   function applyYtState(state) {
