@@ -1,6 +1,6 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-v12';
+const CACHE = 'af-hub-v13';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css',
@@ -148,12 +148,13 @@ self.addEventListener('fetch', event => {
   }
 
   if (url.origin !== self.location.origin || url.pathname.includes('/api/')) return;
-  // App files are network-first so a deploy is visible on the next reload; the
-  // cache is only the offline fallback. Cache-first here used to pin an old
-  // music.js in Chromebook profiles until the cache name was bumped.
+  // App files are network-first and revalidate on every load: a CDN keeps a
+  // long HTTP cache, and one stale script pins the old build in a school
+  // profile until the browser cache is cleared by hand. The cache here is only
+  // the offline fallback.
   event.respondWith((async () => {
     try {
-      const response = await fetch(request);
+      const response = await fetch(request, {cache: 'no-cache'});
       if (response.ok && ['script','style','document','image'].includes(request.destination)) {
         const copy = response.clone();
         caches.open(CACHE).then(cache => cache.put(request, copy));

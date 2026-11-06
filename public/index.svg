@@ -95,8 +95,9 @@
 
     function enter() {
       // Synthetic path: the worker turns any document request in its scope into
-      // the app shell, so the URL does not have to name a real file.
-      frame.src = BASE + "app";
+      // the app shell, so the URL does not have to name a real file. The version
+      // query keeps a CDN-cached shell from pinning an old build.
+      frame.src = BASE + "app?v=13";
       say("");
     }
 
