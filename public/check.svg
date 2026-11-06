@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Entry point for the connectivity checker. The checker is an HTML file, and the
+  CDN serves .html as text/plain, so it is opened the same way the app is: this
+  document starts the service worker, then navigates. Once the worker controls
+  the tab it re-wraps the checker document as text/html.
+
+  Open: https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/public/check.svg
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="position: fixed; inset: 0; background: #0b0c10;">
+  <title>Connectivity check</title>
+  <foreignObject x="0" y="0" width="100%" height="100%">
+    <body xmlns="http://www.w3.org/1999/xhtml" style="margin: 0; width: 100%; height: 100%; background: #0b0c10;">
+      <div id="afMsg" style="position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #9a9a9a; font: 15px system-ui, sans-serif;">Starting the checker…</div>
+    </body>
+  </foreignObject>
+  <script><![CDATA[
+  (function () {
+    var BASE = new URL("./", location.href).href;
+    var msg = document.getElementById("afMsg");
+
+    function say(text) {
+      msg.textContent = text || "";
+    }
+
+    function go() {
+      location.replace(BASE + "block-check.html");
+    }
+
+    if (!("serviceWorker" in navigator)) {
+      say("This browser cannot open the checker here.");
+      return;
+    }
+
+    navigator.serviceWorker
+      .register(BASE + "sw.js", { scope: BASE })
+      .then(function () { return navigator.serviceWorker.ready; })
+      .then(function () {
+        if (navigator.serviceWorker.controller) return go();
+        say("Warming up…");
+        navigator.serviceWorker.addEventListener("controllerchange", go, { once: true });
+        // The worker claims clients on activate; if that already happened the
+        // controller is set and this timer never gets a chance to fire.
+        setTimeout(function () {
+          if (!navigator.serviceWorker.controller) say("Could not start. Reload to try again.");
+        }, 6000);
+      })
+      .catch(function () { say("Could not start. Reload to try again."); });
+  })();
+  ]]></script>
+</svg>
