@@ -77,6 +77,9 @@
 
 	function apply(preset, options) {
 		const persist = !options || options.persist !== false;
+		// Callers pass either a preset or its id; accepting both keeps a stale
+		// saved id from writing "undefined" into the tab title.
+		if (typeof preset === "string") preset = find(preset);
 		if (!original) {
 			original = {
 				title: document.title,

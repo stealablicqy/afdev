@@ -2,7 +2,11 @@
   'use strict';
   const U = window.AFUtil;
   const audio = document.getElementById('audioEngine');
-  const API = '/api/music';
+  // The hub is served straight from the CDN, so there is no server to proxy
+  // through. Every provider below is called directly and sends ACAO: *.
+  const AUDIUS = 'https://api.audius.co/v1';
+  const ITUNES = 'https://itunes.apple.com';
+  const APP_NAME = 'AFGameHub';
   let view = 'browse';
   let currentTrack = null;
   let queue = [];
@@ -16,7 +20,7 @@
   let artistMode = null;
   let lastError = '';
   const trackCache = new Map();
-  const LYRICS_API = '/api/lyrics';
+  const LYRICS_API = 'https://lrclib.net/api';
   let lyricsOpen = false;
   let lyrics = null;
   let lyricsLoading = false;
@@ -35,6 +39,10 @@
   const getHistory = () => AFStore.get('musicHistory', []);
   const esc = value => U.esc(value ?? '');
 
+  function audiusStream(id) {
+    return `${AUDIUS}/tracks/${encodeURIComponent(id)}/stream?app_name=${APP_NAME}`;
+  }
+
   function normalize(raw) {
     const user = raw.user || raw.user_data || {};
     const art = raw.artwork || raw.cover_art || {};
@@ -43,33 +51,114 @@
     const artist = String(raw.artist || raw.artist_name || user.name || user.handle || 'Unknown artist').slice(0,120);
     const permalink = raw.permalink || raw.url || (raw.slug ? `https://audius.co/${raw.slug}` : 'https://audius.co/');
     const artwork = typeof art === 'string' ? art : (art._480x480 || art._1000x1000 || art._150x150 || raw.artwork_url || '');
+    const isItunes = id.startsWith('itunes:');
     const track = {
       id, title, artist, artistId: String(user.id || raw.user_id || raw.artistId || ''), artistHandle: String(user.handle || raw.artistHandle || ''),
       artwork, duration: Number(raw.duration || 0), genre: String(raw.genre || ''),
       playCount: Number(raw.play_count ?? raw.playCount ?? 0), permalink,
+      stream: raw.stream || (isItunes ? '' : audiusStream(id)),
       isStreamable: raw.is_streamable !== false && raw.isStreamable !== false && String(raw.is_streamable ?? raw.isStreamable ?? 'true') !== 'false',
       isStreamGated: raw.is_stream_gated === true || raw.isStreamGated === true,
       parentalWarningType: String(raw.parental_warning_type || raw.parentalWarningType || '').toLowerCase(),
       description: String(raw.description || '').slice(0,1200),
-      source: 'Audius'
+      source: raw.source || (isItunes ? 'Apple Music preview' : 'Audius')
     };
     return track;
+  }
+  // Apple's Search API covers the mainstream catalog that Audius does not:
+  // full studio releases with a 30 second preview. `itunes:` keeps the two
+  // namespaces apart in storage and in the queue.
+  function normalizeItunes(raw) {
+    if (!raw || raw.wrapperType !== 'track' || raw.kind !== 'song') return null;
+    const preview = String(raw.previewUrl || '');
+    if (!preview) return null;
+    const art = String(raw.artworkUrl100 || raw.artworkUrl60 || '');
+    return {
+      id: `itunes:${raw.trackId}`,
+      title: String(raw.trackName || 'Untitled track').slice(0, 180),
+      artist: String(raw.artistName || 'Unknown artist').slice(0, 120),
+      artistId: `itunes:${raw.artistId || ''}`,
+      artistHandle: '',
+      artwork: art ? art.replace(/\/\d+x\d+bb\.(jpg|png)$/i, '/600x600bb.$1') : '',
+      duration: Math.max(0, Math.round(Number(raw.trackTimeMillis || 0) / 1000)),
+      genre: String(raw.primaryGenreName || 'Song'),
+      playCount: 0,
+      permalink: String(raw.trackViewUrl || 'https://music.apple.com/'),
+      stream: preview,
+      isStreamable: true,
+      isStreamGated: false,
+      parentalWarningType: String(raw.trackExplicitness === 'explicit' ? 'explicit' : 'none'),
+      description: `${raw.collectionName ? `${raw.collectionName}. ` : ''}30 second Apple Music preview. Full track opens in Apple Music.`,
+      source: 'Apple Music preview'
+    };
   }
   function remember(track) {
     if (!track?.id) return;
     trackCache.set(track.id, track);
   }
   function allowed(track) {
-    if (!track || !track.id || !track.isStreamable || track.isStreamGated) return false;
+    if (!track || !track.id || !track.stream) return false;
+    if (String(track.id).startsWith('itunes:')) return true;
+    if (!track.isStreamable || track.isStreamGated) return false;
     if (track.parentalWarningType && !['none','clean',''].includes(track.parentalWarningType)) return false;
     return true;
   }
-  async function api(path, options={}) {
-    const response = await fetch(`${API}${path}`, {headers:{Accept:'application/json'}, cache:'no-store', ...options});
-    const data = await response.json().catch(()=>({}));
-    if (!response.ok) throw new Error(data.error || `Music service returned HTTP ${response.status}.`);
-    return data;
+  async function fetchJson(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store', signal: controller.signal });
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : {}; } catch { throw new Error('The music service returned an unreadable response.'); }
+      if (!response.ok) throw new Error(data?.error || `Music service returned HTTP ${response.status}.`);
+      return data;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('The music service took too long to answer.');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  async function audiusSearch(query, limit = 30) {
+    const data = await fetchJson(`${AUDIUS}/tracks/search?query=${encodeURIComponent(query)}&limit=${limit}&app_name=${APP_NAME}`);
+    return (data.data || []).map(normalize).filter(allowed);
+  }
+  async function audiusTrending(limit = 40) {
+    const data = await fetchJson(`${AUDIUS}/tracks/trending?time=week&limit=${limit}&app_name=${APP_NAME}`);
+    return (data.data || []).map(normalize).filter(allowed);
+  }
+  async function itunesSearch(query, limit = 25) {
+    const data = await fetchJson(`${ITUNES}/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=${limit}&country=US`);
+    return (data.results || []).map(normalizeItunes).filter(Boolean);
+  }
+  // Rotating seed list so the "popular" shelf changes day to day instead of
+  // hammering the same six artists forever.
+  const POPULAR_ARTISTS = ['Drake','Taylor Swift','The Weeknd','SZA','Kendrick Lamar','Bad Bunny','Billie Eilish','Post Malone','Ariana Grande','Travis Scott','Doja Cat','Tyler, The Creator','Olivia Rodrigo','Future','21 Savage','Sabrina Carpenter','Metro Boomin','Rihanna','Kanye West','Playboi Carti','Don Toliver','Lil Baby','Brent Faiyaz','Frank Ocean'];
+  function popularSeeds(count = 6) {
+    const day = Math.floor(Date.now() / 86400000);
+    const seeds = [];
+    for (let i = 0; i < count; i += 1) seeds.push(POPULAR_ARTISTS[(day * count + i) % POPULAR_ARTISTS.length]);
+    return seeds;
+  }
+  function dedupe(tracks) {
+    const seen = new Set();
+    return tracks.filter(track => {
+      if (!track?.id) return false;
+      const key = `${String(track.title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${String(track.artist).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  async function popularTracks() {
+    const seeds = popularSeeds();
+    const batches = await Promise.allSettled(seeds.map(name => itunesSearch(name, 4)));
+    const merged = [];
+    for (const batch of batches) if (batch.status === 'fulfilled') merged.push(...batch.value);
+    return dedupe(merged);
+  }
+
   function artwork(track, className='') {
     const source = track.artwork ? `<img src="${esc(track.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="afm-art-fallback">♫</span>';
     return `<div class="afm-art ${className}">${source}</div>`;
@@ -110,7 +199,7 @@
     return `<div class="afm-library-actions"><button data-action="music-view" data-id="browse" class="${view==='browse'?'active':''}"><span>◉</span> Discover</button><button data-action="music-view" data-id="artists" class="${view==='artists'?'active':''}"><span>◍</span> Artists</button><button data-action="music-view" data-id="library" class="${view==='library'?'active':''}"><span>▤</span> Library</button><button data-action="music-view" data-id="favorites" class="${view==='favorites'?'active':''}"><span>♥</span> Liked Songs <small>${getFavorites().length}</small></button></div>
       <div class="afm-playlist-heading"><span>YOUR PLAYLISTS</span><button data-action="music-create-playlist" title="Create playlist">＋</button></div>
       <div class="afm-playlists">${lists.map(p=>`<button class="${view==='playlist'&&currentPlaylistId===p.id?'active':''}" data-action="music-playlist" data-id="${esc(p.id)}">♫ ${esc(p.name)} <small>${(p.trackIds||[]).length}</small></button>`).join('')}</div>
-      <div class="afm-provider-note"><strong>Audio-only music</strong><p>Streamable tracks from independent creators on Audius. No subscription or file importing required.</p><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Discover Audius ↗</a></div>`;
+      <div class="afm-provider-note"><strong>Music that actually plays</strong><p>Full tracks stream from independent creators on Audius. Mainstream releases play as 30 second Apple Music previews, so the whole catalog is searchable without a subscription.</p><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Browse Apple Music ↗</a></div>`;
   }
   function headerTitle() {
     const list = getPlaylists();
@@ -162,6 +251,59 @@
     host.replaceWith(template.content.firstElementChild);
     syncLyrics(true);
   }
+  function cleanTitle(value) {
+    return String(value || '')
+      .replace(/\((?:feat|ft|with)\.?[^)]*\)/gi, '')
+      .replace(/\[(?:feat|ft|with)\.?[^\]]*\]/gi, '')
+      .replace(/\s*-\s*(?:remaster(?:ed)?|deluxe|explicit|radio edit|single version)\b.*$/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+  function parseLrc(value) {
+    const lines = [];
+    const stamp = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+    for (const rawLine of String(value || '').split(/\r?\n/)) {
+      const text = rawLine.replace(/\[[^\]]*\]/g, '').trim();
+      if (!text) continue;
+      let match;
+      stamp.lastIndex = 0;
+      let placed = false;
+      while ((match = stamp.exec(rawLine))) {
+        const minutes = Number(match[1]);
+        const seconds = Number(match[2]);
+        const fraction = match[3] ? Number(`0.${match[3]}`) : 0;
+        lines.push({ time: minutes * 60 + seconds + fraction, text });
+        placed = true;
+      }
+      if (!placed) lines.push({ time: null, text });
+    }
+    const timed = lines.filter(line => typeof line.time === 'number');
+    if (timed.length < 4) return { synced: false, lines: lines.map(({ text }) => ({ time: null, text })) };
+    return { synced: true, lines: timed.sort((a, b) => a.time - b.time) };
+  }
+  function lyricsPayload(record) {
+    if (!record) return { found: false, synced: false, lines: [], source: 'LRCLIB' };
+    if (record.instrumental) return { found: true, synced: false, lines: [{ time: null, text: 'Instrumental track.' }], source: 'LRCLIB' };
+    if (record.syncedLyrics) {
+      const parsed = parseLrc(record.syncedLyrics);
+      if (parsed.lines.length) return { found: true, synced: parsed.synced, lines: parsed.lines, source: 'LRCLIB' };
+    }
+    if (record.plainLyrics) {
+      const lines = String(record.plainLyrics).split(/\r?\n/).map(text => ({ time: null, text: text.trim() })).filter(line => line.text);
+      if (lines.length) return { found: true, synced: false, lines, source: 'LRCLIB' };
+    }
+    return { found: false, synced: false, lines: [], source: 'LRCLIB' };
+  }
+  function scoreRecord(record, title, artist) {
+    const name = cleanTitle(record.trackName || record.name || '').toLowerCase();
+    const who = String(record.artistName || '').toLowerCase();
+    let score = 0;
+    if (name === title.toLowerCase()) score += 3;
+    else if (name.includes(title.toLowerCase()) || title.toLowerCase().includes(name)) score += 1;
+    if (who.includes(artist.toLowerCase()) || artist.toLowerCase().includes(who)) score += 2;
+    if (record.syncedLyrics) score += 2;
+    return score;
+  }
   async function loadLyrics(track, force = false) {
     if (!track?.id) return;
     if (!force && lyricsTrackId === String(track.id) && lyrics) return;
@@ -169,13 +311,25 @@
     const token = ++lyricsToken;
     lyricsLoading = true; lyrics = null; activeLyricIndex = -1;
     renderLyrics();
-    const query = new URLSearchParams({ title: track.title, artist: track.artist });
-    if (track.duration) query.set('duration', String(Math.round(track.duration)));
+    const title = cleanTitle(track.title);
+    const artist = String(track.artist || '').split(/\s*(?:,|&|feat\.?|ft\.?|with)\s*/i)[0].trim() || track.artist;
+    const params = new URLSearchParams({ track_name: title, artist_name: artist });
+    if (track.duration) params.set('duration', String(Math.round(track.duration)));
+    let record = null;
     try {
-      const response = await fetch(`${LYRICS_API}?${query}`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
-      const data = await response.json().catch(() => ({}));
+      try {
+        record = await fetchJson(`${LYRICS_API}/get?${params}`);
+      } catch {
+        record = null;
+      }
+      if (!record) {
+        const list = await fetchJson(`${LYRICS_API}/search?${params}`);
+        const rows = Array.isArray(list) ? list : [];
+        rows.sort((a, b) => scoreRecord(b, title, artist) - scoreRecord(a, title, artist));
+        record = rows.find(row => scoreRecord(row, title, artist) > 0) || null;
+      }
       if (token !== lyricsToken) return;
-      lyrics = Array.isArray(data?.lines) && data.lines.length ? data : { found: false, lines: [], source: 'LRCLIB' };
+      lyrics = lyricsPayload(record);
     } catch (error) {
       if (token !== lyricsToken) return;
       lyrics = { found: false, lines: [], source: 'LRCLIB', error: String(error?.message || error) };
@@ -221,12 +375,15 @@
     if (!artistsCache.length) {
       content.innerHTML = '<div class="afm-loading"><span></span> Gathering artists…</div>';
       try {
-        const data = await api('/trending?time=week&limit=50');
-        artistsCache = (data.tracks || []).map(normalize).filter(allowed);
+        const [audius, popular] = await Promise.allSettled([audiusTrending(60), popularTracks()]);
+        const pool = [];
+        if (audius.status === 'fulfilled') pool.push(...audius.value);
+        if (popular.status === 'fulfilled') pool.push(...popular.value);
+        artistsCache = dedupe(pool);
         artistsCache.forEach(remember);
       } catch (err) { setStatus(err.message, 'error'); }
     }
-    content.innerHTML = `<section class="afm-collection-head"><div><span class="afm-kicker">DISCOVER</span><h2>Artists</h2><p>Creators trending on Audius this week</p></div><button data-action="music-view" data-id="browse">Discover music</button></section>${artistCards(artistsCache)}`;
+    content.innerHTML = `<section class="afm-collection-head"><div><span class="afm-kicker">DISCOVER</span><h2>Artists</h2><p>Mainstream releases from Apple Music and creators trending on Audius</p></div><button data-action="music-view" data-id="browse">Discover music</button></section>${artistCards(artistsCache)}`;
     setStatus('');
   }
   function renderPage() {
@@ -248,10 +405,10 @@
         ${playlistView()}
       </aside>
       <main class="afm-music-main">
-        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Audio-only playback · Free creator catalog · Powered by Audius</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Audius ↗</a></div></header>
+        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Apple Music previews · Full creator streams from Audius · Lyrics from LRCLIB</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Apple Music ↗</a></div></header>
         <div id="afmStatus" class="afm-status" hidden></div>
         <div id="afmContent"><div class="afm-loading"><span></span> Loading your music…</div></div>
-        <footer class="afm-music-footer">Tracks are streamed from Audius. Artist names, artwork, and original track links are retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Open Music License</a>.</footer>
+        <footer class="afm-music-footer">Mainstream tracks stream as Apple Music previews. Independent tracks stream from Audius, with artist names, artwork, and original links retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Audius Open Music License</a>.</footer>
       </main>
       ${lyricsPanel()}
     </div>`;
@@ -274,14 +431,19 @@
     content.innerHTML = '<div class="afm-loading"><span></span> Finding trending tracks…</div>';
     setStatus('Connecting to the free Audius music catalog…');
     try {
-      const data = await api('/trending?time=week&limit=30');
+      const [popular, trending] = await Promise.allSettled([popularTracks(), audiusTrending(30)]);
       if (thisReq !== requestNo || !document.getElementById('afmContent')) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      const mainstream = popular.status === 'fulfilled' ? popular.value : [];
+      const indie = trending.status === 'fulfilled' ? trending.value : [];
+      if (popular.status === 'rejected' && trending.status === 'rejected') {
+        throw new Error(popular.reason?.message || trending.reason?.message || 'The music services did not answer.');
+      }
+      const tracks = dedupe([...mainstream, ...indie]);
       tracks.forEach(remember);
-      artistsCache = tracks;
+      artistsCache = dedupe([...mainstream, ...indie]);
       visibleTracks = tracks;
-      setStatus(tracks.length ? `${tracks.length} streamable tracks loaded.` : 'The catalog did not return playable tracks. Try refreshing.');
-      content.innerHTML = `${section('Trending songs',grid(tracks.slice(0,18)))}${section('Popular artists',artistCards(tracks))}${section('Recently played',renderHistory())}`;
+      setStatus(tracks.length ? `${tracks.length} playable tracks loaded from Apple Music and Audius.` : 'The catalog did not return playable tracks. Try refreshing.');
+      content.innerHTML = `${section('Popular right now',grid(mainstream.slice(0,18)))}${section('Trending on Audius',grid(indie.slice(0,12)))}${section('Popular artists',artistCards(artistsCache))}${section('Recently played',renderHistory())}`;
     } catch (err) {
       if (thisReq !== requestNo) return;
       lastError = err.message;
@@ -302,17 +464,18 @@
     const form = document.getElementById('musicSearchForm');
     if (!content) { AF.renderRoute('music'); return; }
     content.innerHTML = '<div class="afm-loading"><span></span> Searching tracks and artists…</div>';
-    setStatus('Searching Audius…');
+    setStatus('Searching Apple Music and Audius…');
     const req = ++requestNo;
     try {
-      const data = await api(`/search?q=${encodeURIComponent(searchText)}&limit=30`);
+      const [apple, audius] = await Promise.allSettled([itunesSearch(searchText, 25), audiusSearch(searchText, 25)]);
       if (req !== requestNo) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      const mainstream = apple.status === 'fulfilled' ? apple.value : [];
+      const indie = audius.status === 'fulfilled' ? audius.value : [];
+      const tracks = dedupe([...mainstream, ...indie]);
       tracks.forEach(remember);
       visibleTracks = tracks;
-      const artists = data.artists || [];
-      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable match was found in Audius. This catalog does not include every mainstream artist or release.</div>')}${artists.length?section('Artists',`<div class="afm-artist-grid">${artists.map(a=>`<button class="afm-artist-card" data-action="music-artist" data-id="${esc(a.id)}" data-name="${esc(a.name||a.handle)}"><span>${a.artwork?`<img src="${esc(a.artwork)}" alt="" loading="lazy">`:'♫'}</span><strong>${esc(a.name||a.handle)}</strong><small>Artist</small></button>`).join('')}</div>`):''}`;
-      setStatus(`${tracks.length} playable tracks · ${artists.length} artists found.`);
+      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:`<div class="afm-empty">No playable match for “${esc(searchText)}”. Try the artist name on its own.</div>`)}${section('Artists',artistCards(tracks))}`;
+      setStatus(`${tracks.length} playable tracks · ${mainstream.length} Apple Music previews · ${indie.length} Audius streams.`);
     } catch (err) {
       if (req !== requestNo) return;
       setStatus(err.message,'error');
@@ -328,11 +491,25 @@
     setStatus('');
     const req = ++requestNo;
     try {
-      const data = await api(`/artist/${encodeURIComponent(id)}`);
+      let tracks = [];
+      if (String(id).startsWith('itunes:')) {
+        const data = await fetchJson(`${ITUNES}/lookup?id=${encodeURIComponent(String(id).slice(7))}&entity=song&limit=50&country=US`);
+        tracks = (data.results || []).map(normalizeItunes).filter(Boolean);
+      } else {
+        try {
+          const data = await fetchJson(`${AUDIUS}/users/${encodeURIComponent(id)}/tracks?limit=50&app_name=${APP_NAME}`);
+          tracks = (data.data || []).map(normalize).filter(allowed);
+        } catch {
+          const fallback = await audiusSearch(name || id, 30);
+          tracks = fallback.filter(track => String(track.artistId) === String(id));
+        }
+      }
       if (req !== requestNo) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      tracks = dedupe(tracks);
       tracks.forEach(remember); visibleTracks = tracks;
-      content.innerHTML = `<section class="afm-artist-hero"><div class="afm-artist-orb">♫</div><div><span class="afm-kicker">ARTIST</span><h2>${esc(name||'Artist')}</h2><p>${tracks.length} available tracks on Audius</p><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Explore creators ↗</a></div></section>${section('Tracks',tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable tracks were found for this artist.</div>')}`;
+      const provider = String(id).startsWith('itunes:') ? 'Apple Music' : 'Audius';
+      content.innerHTML = `<section class="afm-artist-hero"><div class="afm-artist-orb">${tracks[0]?.artwork?`<img src="${esc(tracks[0].artwork)}" alt="" referrerpolicy="no-referrer">`:'♫'}</div><div><span class="afm-kicker">ARTIST</span><h2>${esc(name||'Artist')}</h2><p>${tracks.length} playable tracks on ${provider}</p><a href="${String(id).startsWith('itunes:')?'https://music.apple.com/':'https://audius.co/'}" target="_blank" rel="noopener noreferrer">Open on ${provider} ↗</a></div></section>${section('Tracks',tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable tracks were found for this artist.</div>')}`;
+      setStatus(`${tracks.length} tracks loaded.`);
     } catch (err) { setStatus(err.message,'error'); content.innerHTML = '<div class="afm-empty">Could not load this artist right now.</div>'; }
   }
   function playlistTracks(id) {
@@ -423,7 +600,7 @@
     const history=getHistory().filter(t=>String(t.id)!==String(track.id));
     AFStore.set('musicHistory',[track,...history].slice(0,30));
     audio.pause();
-    audio.src=`${API}/stream/${encodeURIComponent(track.id)}`;
+    audio.src=track.stream;
     audio.load(); updatePlayer();
     if (lyricsOpen) loadLyrics(track);
     try { await audio.play(); updatePlayer(); }
@@ -448,7 +625,7 @@
   }
   function renderInfo() {
     if(!currentTrack)return;
-    AF.dialog(`<div class="dialog-head"><div><div class="eyebrow">NOW PLAYING</div><h2>${esc(currentTrack.title)}</h2></div><button class="icon-button" data-action="close-dialog">×</button></div><div class="dialog-body"><div class="afm-info-row">${artwork(currentTrack,'afm-info-art')}<div><strong>${esc(currentTrack.artist)}</strong><small>${esc(currentTrack.genre||'Audius track')}</small></div></div><p>${esc(currentTrack.description||'This creator has not added a track description.')}</p><p class="section-sub">Audio streamed directly from Audius. Creator and original track information remain available.</p><a class="btn btn-primary" href="${esc(currentTrack.permalink)}" target="_blank" rel="noopener noreferrer">Open original track ↗</a></div>`);
+    AF.dialog(`<div class="dialog-head"><div><div class="eyebrow">NOW PLAYING</div><h2>${esc(currentTrack.title)}</h2></div><button class="icon-button" data-action="close-dialog">×</button></div><div class="dialog-body"><div class="afm-info-row">${artwork(currentTrack,'afm-info-art')}<div><strong>${esc(currentTrack.artist)}</strong><small>${esc(currentTrack.genre||currentTrack.source||'Track')}</small></div></div><p>${esc(currentTrack.description||'This creator has not added a track description.')}</p><p class="section-sub">${esc(currentTrack.source||'Audius')}. Creator and original track information remain available.</p><a class="btn btn-primary" href="${esc(currentTrack.permalink)}" target="_blank" rel="noopener noreferrer">Open original track ↗</a></div>`);
   }
   function onAction(action,id,el) {
     if(action==='music-view') { view=id||'browse'; refreshChrome(); if(view==='search') { searchText=document.getElementById('musicSearchQuery')?.value||searchText; searchMusic(searchText); } else if(view==='browse') loadBrowse(); else if(view==='artists') openArtists(); else openCollection(view); return; }
