@@ -693,13 +693,37 @@
   let ytTime = 0;
   let ytDuration = 0;
   let ytVolume = 80;
-  // Video ids whose owner disabled embedding (errors 101/150/151). Retrying the
-  // same id never helps, so they are remembered and skipped in the queue.
+  // Video ids whose owner disabled embedding (errors 100/101/150/151). Retrying
+  // the same id never helps, so they are remembered and never loaded twice.
   const ytBlocked = new Set();
-  let ytSkips = 0;
+  // The track the user actually clicked. Recovery works back towards this and
+  // never advances the queue, because skipping is exactly the bug that made a
+  // chosen song turn into somebody else's song.
+  let ytAttemptTrack = null;
+  let ytRecovering = false;
+  let ytLoadSerial = 0;
+  let ytWatchdog = 0;
 
   function ytActive() {
     return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
+  }
+
+  // Title comparison for same-song matching. Upload titles arrive as
+  // "Artist - Song (Official Audio)", so brackets are dropped and everything
+  // that is not a letter or digit is stripped before matching.
+  function coreKey(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[([][^)\]]*[)\]]/g, ' ')
+      .replace(/[^a-z0-9]+/g, '');
+  }
+  function sameSong(a, b) {
+    const key = coreKey(a);
+    const other = coreKey(b);
+    if (!key || !other) return false;
+    if (key === other) return true;
+    if (key.length < 6 || other.length < 6) return false;
+    return key.includes(other) || other.includes(key);
   }
 
   function loadYTAPI() {
@@ -770,16 +794,26 @@
     }, 700);
   }
 
+  // Resolves once a video id has been handed to a live player. Callers wait on
+  // the state machine after this; "load() returned" is not "audio started".
   function ytLoad(videoId) {
     ensureYT();
+    const serial = ++ytLoadSerial;
     ytVideoId = videoId;
     ytState = -1;
     ytTime = 0;
     ytDuration = 0;
-    loadYTAPI().then((YT) => {
+    clearTimeout(ytWatchdog);
+    return loadYTAPI().then((YT) => {
+      if (serial !== ytLoadSerial) return null;
       if (!YT || typeof YT.Player !== 'function') throw new Error('player unavailable');
       if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
-        try { ytPlayer.loadVideoById(videoId); ytPlay(); return; } catch {}
+        try {
+          ytPlayer.loadVideoById(videoId);
+          ytPlay();
+          armWatchdog();
+          return ytPlayer;
+        } catch {}
       }
       if (ytPlayer) { try { ytPlayer.destroy(); } catch {} ytPlayer = null; }
       ytHost.innerHTML = '';
@@ -790,37 +824,32 @@
         height: '220',
         videoId,
         playerVars: {
-          autoplay: 1, playsinline: 1, rel: 0, controls: 0,
-          disablekb: 1, modestbranding: 1, origin: location.origin
+          autoplay: 1, playsinline: 1, rel: 0, controls: 0, fs: 0,
+          disablekb: 1, modestbranding: 1, iv_load_policy: 3, origin: location.origin
         },
         events: {
           onReady: () => {
             try { ytPlayer.setVolume(ytVolume); } catch {}
             ytPlay();
+            armWatchdog();
           },
           onStateChange: (event) => applyYtState(Number(event.data)),
           onError: (event) => {
             const code = Number(event && event.data);
             console.warn('youtube player error', code);
-            if (code === 101 || code === 150 || code === 151) {
-              ytBlocked.add(String(ytVideoId));
-              ytSkips += 1;
-              if (ytSkips <= 5) {
-                AF.toast('That uploader blocks embedding — next track.', 'warning');
-                nextTrack(1);
-                return;
-              }
-            }
-            ytSkips = 0;
-            AF.toast('This track cannot be played. Pick another result.', 'error');
-            applyYtState(2);
+            // Every id that fails here is remembered, and the current wait is
+            // failed immediately instead of sitting out its timeout.
+            ytBlocked.add(String(ytVideoId));
+            ytState = -2;
+            ytRecover(code);
           }
         }
       });
       ytFrame = (ytPlayer.getIframe && ytPlayer.getIframe()) || null;
+      return ytPlayer;
     }).catch((error) => {
       // The API host is blocked or slow: fall back to the plain embed so the
-      // row at least produces a frame and the message bridge can drive it.
+      // row at least produces a frame and the widget bridge can drive it.
       console.warn('youtube iframe api fallback:', error && error.message);
       const origin = encodeURIComponent(location.origin || 'https://localhost');
       const frame = document.createElement('iframe');
@@ -832,13 +861,132 @@
       ytHost.innerHTML = '';
       ytHost.appendChild(frame);
       ytFrame = frame;
+      armWatchdog();
+      return null;
     });
+  }
+
+  // A player that never reaches PLAYING and never errors is the silent failure:
+  // autoplay refused, or the embed stalled. Catch it instead of pretending the
+  // row is playing.
+  function armWatchdog() {
+    clearTimeout(ytWatchdog);
+    ytWatchdog = setTimeout(() => {
+      if (ytState === 1 || ytState === 2 || ytState === 3 || ytState === -2) return;
+      ytRecover('no-start');
+    }, 9000);
+  }
+
+  function ytWaitState(target, ms) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (ytState === target) return resolve(true);
+        if (ytState === -2) return resolve(false);
+        if (Date.now() - started >= ms) return resolve(false);
+        setTimeout(tick, 250);
+      };
+      tick();
+    });
+  }
+
+  async function ytTryVideo(videoId) {
+    if (!videoId || ytBlocked.has(videoId)) return false;
+    try { await ytLoad(videoId); } catch { return false; }
+    const playing = await ytWaitState(1, 5000);
+    if (!playing) ytBlocked.add(videoId);
+    return playing;
+  }
+
+  // Same song, different upload. Only rows whose title matches the clicked
+  // track are accepted; a neighbour is the bug this replaces.
+  async function ytAlternateIds(track) {
+    const found = [];
+    const queries = [`${track.title} ${track.artist}`.trim(), track.title];
+    for (const query of queries) {
+      if (found.length >= 3) break;
+      let rows = [];
+      try { rows = await pipedSearch(query, 25); } catch { rows = []; }
+      for (const row of rows) {
+        const videoId = String(row.id).slice(3);
+        if (!videoId || ytBlocked.has(videoId) || found.includes(videoId)) continue;
+        if (String(track.id) === `yt:${videoId}`) continue;
+        if (!sameSong(row.title, track.title)) continue;
+        found.push(videoId);
+        if (found.length >= 3) break;
+      }
+    }
+    return found;
+  }
+
+  // Last resort that still plays the requested song: the same title on a
+  // catalogue that serves direct audio rather than an embed.
+  async function sameSongStream(track) {
+    const query = `${track.title} ${track.artist}`.trim();
+    try {
+      const rows = await audiusSearch(query, 10);
+      const hit = rows.find((row) => sameSong(row.title, track.title) && isHttpUrl(row.stream));
+      if (hit) return hit;
+    } catch {}
+    try {
+      const rows = await itunesSearch(query, 10);
+      const hit = rows.find((row) => sameSong(row.title, track.title) && isHttpUrl(row.stream));
+      if (hit) return hit;
+    } catch {}
+    return null;
+  }
+
+  // Direct audio for any track. Audio only: the YouTube frame is paused first
+  // so two engines never play over each other.
+  function playNative(track) {
+    if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+      try { ytPlayer.pauseVideo(); } catch {}
+    }
+    const src = streamFor(track);
+    if (!src) return false;
+    audio.src = src;
+    audio.load();
+    audio.play().catch(() => AF.toast('Press play to start this track.', 'error'));
+    document.body.classList.add('music-playing');
+    updatePlayer();
+    return true;
+  }
+
+  // One recovery per track. It never advances the queue: another upload of the
+  // same song, then direct audio of the same song, then stop and say so.
+  async function ytRecover(code) {
+    const track = ytAttemptTrack;
+    if (!track || ytRecovering) return;
+    if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+    ytRecovering = true;
+    clearTimeout(ytWatchdog);
+    try {
+      if (code !== 'no-start') AF.toast('Finding a playable version of this track…', 'warning');
+      const alternates = await ytAlternateIds(track);
+      for (const videoId of alternates) {
+        if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+        if (await ytTryVideo(videoId)) return;
+      }
+      if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+      const native = await sameSongStream(track);
+      if (native && playNative(native)) return;
+      AF.toast('No playable source for this track. Pick another result.', 'error');
+      document.body.classList.remove('music-playing');
+      applyYtState(2);
+    } catch (error) {
+      console.warn('track recovery failed', error && error.message);
+      AF.toast('No playable source for this track. Pick another result.', 'error');
+      document.body.classList.remove('music-playing');
+      applyYtState(2);
+    } finally {
+      ytRecovering = false;
+    }
   }
 
   function applyYtState(state) {
     if (!Number.isFinite(state)) return;
     ytState = state;
-    if (state === 1) ytSkips = 0;
+    if (state === 1) clearTimeout(ytWatchdog);
     document.body.classList.toggle('music-playing', state === 1);
     if (state === 0) {
       if (repeatMode === 'one') { ytCommand('seekTo', [0, true]); ytCommand('playVideo'); return; }
@@ -922,17 +1070,14 @@
     audio.removeAttribute('src');
     audio.load();
     if (String(track.id).startsWith('yt:')) {
+      ytAttemptTrack = track;
+      ytRecovering = false;
       ytLoad(String(track.id).slice(3));
-      document.body.classList.add('music-playing');
       updatePlayer();
     } else {
+      ytAttemptTrack = null;
       if (ytFrame) ytCommand('pauseVideo');
-      const src = streamFor(track);
-      if (!src) { AF.toast('No stream URL for this track. Pick another result.','error'); document.body.classList.remove('music-playing'); updatePlayer(); return; }
-      audio.src=src;
-      audio.load(); updatePlayer();
-      try { await audio.play(); updatePlayer(); }
-      catch (error) { AF.toast('Playback could not start. Press play again or choose another track.','error'); }
+      if (!playNative(track)) { AF.toast('No stream URL for this track. Pick another result.','error'); document.body.classList.remove('music-playing'); updatePlayer(); return; }
     }
     if (lyricsOpen) loadLyrics(track);
     document.querySelectorAll('.afm-track-row,.afm-track-card').forEach(el=>el.classList.toggle('is-playing',!!el.querySelector(`[data-id="${CSS.escape(String(track.id))}"]`)));
