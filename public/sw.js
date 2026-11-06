@@ -57,7 +57,7 @@ self.addEventListener('message', event => {
   }
 });
 // Paths owned by a proxy lane. This worker is registered at the app directory
-// (<scope>), so it also sees every proxied page â€” those responses belong to the
+// (<scope>), so it also sees every proxied page — those responses belong to the
 // engine, not the app shell: caching one would pin a proxied page in the hub
 // cache, and the offline fallback below would answer it with index.html.
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
