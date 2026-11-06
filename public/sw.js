@@ -1,15 +1,12 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-desync-inspired-v11';
+const CACHE = 'af-hub-v12';
 const SHELL = [
-  './', './index.html', './css/app.css', './css/desync-inspired.css', './css/af-music.css','./css/browser.css',
-  './js/supabase-client.js', './js/db.js', './js/games.js', './js/music.js', './js/app.js',
-  './assets/af-mark.svg', './assets/tab-calc.svg', './assets/tab-notes.svg',
-  './assets/tab-calendar.svg', './assets/covers/2048.svg', './assets/covers/chess.svg',
-  './assets/covers/coolmath.svg', './assets/covers/crazygames.svg', './assets/covers/guess-tab.svg',
-  './assets/covers/itch.svg', './assets/covers/memory.svg', './assets/covers/poki.svg',
-  './assets/covers/scratch.svg', './assets/covers/sprint.svg', './assets/covers/words.svg',
-  './manifest.webmanifest'
+  './', './index.html', './manifest.webmanifest',
+  './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css',
+  './js/supabase-client.js', './js/db.js', './js/games-catalog.js', './js/games.js',
+  './js/music.js', './js/cloak.js', './js/cloak-ui.js', './js/app.js',
+  './assets/falcon.png', './assets/favicon.png', './assets/af-mark.svg'
 ];
 const SHIELD_KEY = new URL('__afhub_shield_state__', self.registration.scope).href;
 const TRACKER_HOSTS = [
@@ -38,7 +35,13 @@ async function writeShieldState(enabled) {
 }
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(SHELL)).then(() => self.skipWaiting()));
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE);
+    // One missing shell file must not fail the whole install: on a CDN the shell
+    // is only a cache, never a requirement for the app to boot.
+    await Promise.all(SHELL.map(entry => cache.add(entry).catch(() => null)));
+    await self.skipWaiting();
+  })());
 });
 self.addEventListener('activate', event => {
   event.waitUntil((async () => {
@@ -53,23 +56,28 @@ self.addEventListener('message', event => {
     event.waitUntil(writeShieldState(data.enabled));
   }
 });
-// Paths owned by a proxy lane. This worker is registered at scope "/" so it can
-// cache the hub shell, which means it also sees every proxied page — including
-// Rammerhead's, now that engine shares the hub origin. Those responses belong to
-// the engine, not the app shell: caching one would pin a proxied page in the
-// hub cache, and the offline fallback below would answer a proxied navigation
-// with index.html. Hand them straight back to the browser.
+// Paths owned by a proxy lane. This worker is registered at the app directory
+// (<scope>), so it also sees every proxied page — those responses belong to the
+// engine, not the app shell: caching one would pin a proxied page in the hub
+// cache, and the offline fallback below would answer it with index.html.
+const SCOPE_PATH = new URL(self.registration.scope).pathname;
+const PROXY_DIRS = ['scramjet/', 'uv/', 'baremux/', 'transport/', 'wisp/'];
 const PROXY_ROUTES = new Set([
-  '/hammerhead.js', '/worker-hammerhead.js', '/transport-worker.js', '/task.js',
-  '/iframe-task.js', '/messaging', '/rammerhead.js', '/api/shuffleDict', '/syncLocalStorage'
+  'hammerhead.js', 'worker-hammerhead.js', 'transport-worker.js', 'task.js',
+  'iframe-task.js', 'messaging', 'rammerhead.js', 'api/shuffleDict', 'syncLocalStorage'
 ]);
-const PROXY_PREFIXES = ['/scramjet/', '/uv/', '/baremux/', '/transport/', '/wisp/'];
-const PROXY_SESSION = /^\/[0-9a-f]{32}(?:[/!]|$)/;
+
+// Everything is compared scope-relative: on a CDN the scope is
+// /gh/user/repo@ref/public/ and a root-absolute "/uv/" never matches.
+function scopeRelative(pathname) {
+  return pathname.startsWith(SCOPE_PATH) ? pathname.slice(SCOPE_PATH.length) : null;
+}
 
 function isProxyPath(pathname) {
-  if (PROXY_ROUTES.has(pathname)) return true;
-  if (PROXY_SESSION.test(pathname)) return true;
-  return PROXY_PREFIXES.some(prefix => pathname.startsWith(prefix));
+  const relative = scopeRelative(pathname);
+  if (relative === null) return false;
+  if (PROXY_ROUTES.has(relative)) return true;
+  return PROXY_DIRS.some(dir => relative.startsWith(dir));
 }
 
 function asHtml(body) {
