@@ -75,6 +75,23 @@
 		link.href = href;
 	}
 
+	// On the CDN build the hub runs inside an iframe owned by index.svg, so the
+	// tab title belongs to that parent document, not this one. Guardian/Hapara
+	// read the parent's title, so every change is posted up; index.svg owns the
+	// baseline title and repaints it when the cloak is turned off.
+	function mirror(preset) {
+		const payload = {
+			af: "cloak",
+			title: preset ? preset.title : null,
+			icon: preset ? iconFor(preset) : null,
+		};
+		try {
+			window.parent.postMessage(payload, "*");
+		} catch (error) {
+			/* no parent to talk to */
+		}
+	}
+
 	function apply(preset, options) {
 		const persist = !options || options.persist !== false;
 		// Callers pass either a preset or its id; accepting both keeps a stale
@@ -91,6 +108,7 @@
 			applied = null;
 			document.title = original.title;
 			if (original.icon) setFavicon(original.icon);
+			mirror(null);
 			if (persist) localStorage.removeItem(STORAGE_KEY);
 			return null;
 		}
@@ -98,6 +116,7 @@
 		applied = preset;
 		document.title = preset.title;
 		setFavicon(iconFor(preset));
+		mirror(preset);
 		if (persist) localStorage.setItem(STORAGE_KEY, preset.id);
 		return preset;
 	}
@@ -114,6 +133,7 @@
 		if (!original) return;
 		document.title = original.title;
 		if (original.icon) setFavicon(original.icon);
+		mirror(null);
 	}
 
 	function panic() {
