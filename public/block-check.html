@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connectivity check</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; background: #0b0c10; color: #e6e8ee; font: 14px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+  p.hint { margin: 0 0 16px; color: #8b90a0; font-size: 12.5px; }
+  textarea { width: 100%; min-height: 132px; padding: 10px; border-radius: 10px; border: 1px solid #262a36; background: #12141b; color: #e6e8ee; font: 12.5px/1.5 ui-monospace, Consolas, monospace; resize: vertical; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; align-items: center; }
+  button { border: 0; border-radius: 9px; padding: 9px 14px; font: 600 13px system-ui, sans-serif; background: #2f6df6; color: #fff; cursor: pointer; }
+  button.ghost { background: #1b1f2a; color: #c8cddb; }
+  button:disabled { opacity: .5; cursor: default; }
+  input[type=url] { flex: 1 1 260px; min-width: 200px; padding: 9px 10px; border-radius: 9px; border: 1px solid #262a36; background: #12141b; color: #e6e8ee; font: 12.5px ui-monospace, Consolas, monospace; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid #1c2029; vertical-align: top; }
+  th { color: #8b90a0; font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  td.host { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; word-break: break-all; }
+  .ok { color: #3ddc84; font-weight: 600; }
+  .bad { color: #ff5d6c; font-weight: 600; }
+  .slow { color: #ffb020; font-weight: 600; }
+  #summary { margin: 14px 0 0; font-size: 13px; color: #b9bfd0; }
+</style>
+</head>
+<body>
+<h1>Connectivity check</h1>
+<p class="hint">Run this on the school Chromebook, with the filter extension enabled. One host per line. A host that answers here is a host the filter is not blocking.</p>
+
+<textarea id="targets" spellcheck="false">https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/public/index.svg
+https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2
+https://github.com
+https://raw.githubusercontent.com
+https://api.github.com
+https://af-game-hub-desync-inspired.example.workers.dev
+https://example.pages.dev
+https://example.netlify.app
+https://example.vercel.app
+https://example.web.app
+https://example.deno.dev
+https://example.onrender.com
+https://www.wikipedia.org
+https://www.desmos.com
+https://neal.fun</textarea>
+
+<div class="row">
+  <button id="run">Run check</button>
+  <button id="copy" class="ghost">Copy JSON</button>
+</div>
+
+<div class="row">
+  <input id="hook" type="url" placeholder="Optional Discord webhook URL — results get posted as JSON">
+  <button id="send" class="ghost">Post results</button>
+</div>
+
+<div id="summary"></div>
+<table>
+  <thead><tr><th>Host</th><th>Result</th><th>ms</th><th>Detail</th></tr></thead>
+  <tbody id="out"><tr><td colspan="4" style="color:#8b90a0">No run yet.</td></tr></tbody>
+</table>
+
+<script>
+const PROBE_TIMEOUT = 7000;
+const GAP = 150;
+let lastReport = null;
+
+const out = document.getElementById('out');
+const summary = document.getElementById('summary');
+const runBtn = document.getElementById('run');
+const copyBtn = document.getElementById('copy');
+const sendBtn = document.getElementById('send');
+const hookInput = document.getElementById('hook');
+
+hookInput.value = localStorage.getItem('afhub.checkHook') || '';
+hookInput.addEventListener('change', () => localStorage.setItem('afhub.checkHook', hookInput.value.trim()));
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function probe(url) {
+  const started = performance.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT);
+  try {
+    // no-cors keeps this a plain connectivity test: an opaque response still
+    // proves the request left the browser and came back.
+    await fetch(url, { mode: 'no-cors', cache: 'no-store', redirect: 'follow', signal: controller.signal });
+    const ms = Math.round(performance.now() - started);
+    return { host: url, state: ms > 2500 ? 'slow' : 'allowed', ms, detail: '' };
+  } catch (error) {
+    const ms = Math.round(performance.now() - started);
+    if (error && error.name === 'AbortError') return { host: url, state: 'timeout', ms, detail: 'no response' };
+    return { host: url, state: 'blocked', ms, detail: String(error && error.message || error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function label(state) {
+  return state === 'allowed' ? 'ALLOWED' : state === 'slow' ? 'ALLOWED (slow)' : state === 'timeout' ? 'TIMEOUT' : 'BLOCKED';
+}
+function cls(state) {
+  return state === 'allowed' ? 'ok' : state === 'blocked' ? 'bad' : 'slow';
+}
+
+async function run() {
+  const urls = document.getElementById('targets').value.split('\n').map(s => s.trim()).filter(Boolean);
+  if (!urls.length) return;
+  runBtn.disabled = true;
+  copyBtn.disabled = true;
+  out.innerHTML = '';
+  summary.textContent = 'Running…';
+  const results = [];
+
+  for (const url of urls) {
+    const row = document.createElement('tr');
+    row.innerHTML = '<td class="host"></td><td class="slow">…</td><td></td><td></td>';
+    row.children[0].textContent = url;
+    out.appendChild(row);
+
+    const result = await probe(url);
+    results.push(result);
+    row.children[1].className = cls(result.state);
+    row.children[1].textContent = label(result.state);
+    row.children[2].textContent = result.ms;
+    row.children[3].textContent = result.detail;
+    await sleep(GAP);
+  }
+
+  const allowed = results.filter(r => r.state === 'allowed' || r.state === 'slow').length;
+  summary.textContent = allowed + ' of ' + results.length + ' hosts reachable.';
+  lastReport = { checkedAt: new Date().toISOString(), userAgent: navigator.userAgent, allowed, results };
+  runBtn.disabled = false;
+  copyBtn.disabled = false;
+  return lastReport;
+}
+
+async function copy() {
+  const report = lastReport || await run();
+  if (!report) return;
+  try { await navigator.clipboard.writeText(JSON.stringify(report, null, 2)); summary.textContent += ' Copied.'; }
+  catch { summary.textContent += ' Clipboard blocked.'; }
+}
+
+async function send() {
+  const hook = hookInput.value.trim();
+  if (!hook) { summary.textContent = 'Add a webhook URL first.'; return; }
+  const report = lastReport || await run();
+  if (!report) return;
+  const ok = report.results.filter(r => r.state === 'allowed' || r.state === 'slow');
+  const bad = report.results.filter(r => r.state === 'blocked' || r.state === 'timeout');
+  sendBtn.disabled = true;
+  summary.textContent = 'Posting…';
+  try {
+    const response = await fetch(hook, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: 'AF Hub check',
+        content: 'Connectivity check — ' + report.allowed + '/' + report.results.length + ' reachable',
+        embeds: [{
+          title: 'Host check',
+          color: bad.length ? 0xff5d6c : 0x3ddc84,
+          fields: [
+            { name: 'Allowed', value: ok.length ? ok.map(r => '`' + r.host + '`').join('\n').slice(0, 1000) : 'none', inline: false },
+            { name: 'Blocked', value: bad.length ? bad.map(r => '`' + r.host + '` (' + r.state + ')').join('\n').slice(0, 1000) : 'none', inline: false }
+          ],
+          timestamp: report.checkedAt
+        }]
+      })
+    });
+    summary.textContent = response.ok || response.type === 'opaque' ? 'Posted.' : 'Post failed: HTTP ' + response.status;
+  } catch (error) {
+    summary.textContent = 'Post failed: ' + String(error && error.message || error);
+  } finally {
+    sendBtn.disabled = false;
+  }
+}
+
+runBtn.addEventListener('click', run);
+copyBtn.addEventListener('click', copy);
+sendBtn.addEventListener('click', send);
+</script>
+</body>
+</html>

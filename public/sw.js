@@ -1,6 +1,6 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-desync-inspired-v9';
+const CACHE = 'af-hub-desync-inspired-v10';
 const SHELL = [
   './', './index.html', './css/app.css', './css/desync-inspired.css', './css/af-music.css','./css/browser.css',
   './js/supabase-client.js', './js/db.js', './js/games.js', './js/music.js', './js/app.js',
@@ -72,12 +72,57 @@ function isProxyPath(pathname) {
   return PROXY_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
 
+function asHtml(body) {
+  return new Response(body, {
+    status: 200,
+    headers: {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'}
+  });
+}
+
+// Static CDNs that refuse to serve text/html (jsDelivr is one) hand documents
+// back as text/plain, which renders as source instead of a page. The app is
+// hosted on one of those CDNs, so it boots from index.svg and every navigation
+// lands here: fetch the file, and re-wrap anything that came back as plain text.
+async function serveDocument(request) {
+  const url = new URL(request.url);
+  const target = url.pathname.endsWith('/')
+    ? new Request(new URL(url.pathname + 'index.html', url).href, {headers: request.headers})
+    : request;
+
+  let response;
+  try {
+    response = await fetch(target, {redirect: 'follow'});
+  } catch {
+    const shell = await caches.match('./index.html');
+    return shell ? asHtml(await shell.text()) : Response.error();
+  }
+
+  if (response.status === 404) {
+    // SPA and synthetic routes: index.svg navigates to /app, the app itself uses
+    // hash routes, so an unknown document path falls back to the shell.
+    const shell = await caches.match('./index.html');
+    if (shell) return asHtml(await shell.text());
+    return response;
+  }
+
+  const type = (response.headers.get('content-type') || '').toLowerCase();
+  if (response.ok && (type.startsWith('text/plain') || type.startsWith('application/octet-stream'))) {
+    return asHtml(await response.text());
+  }
+  return response;
+}
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') return;
   const url = new URL(request.url);
 
   if (url.origin === self.location.origin && isProxyPath(url.pathname)) return;
+
+  if (request.mode === 'navigate' && url.origin === self.location.origin) {
+    event.respondWith(serveDocument(request));
+    return;
+  }
 
   // Only block known ad/analytics host resources. Never block navigations, documents,
   // frames, media streams, or same-origin app files.
