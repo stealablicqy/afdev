@@ -499,8 +499,12 @@ button { cursor: pointer; }
 	width: 100%;
 	height: 100%;
 	border: 0;
-	background: #fff;
+	background: var(--bg);
+	opacity: 0;
+	transition: opacity 0.4s ease;
 }
+
+.frame-host.is-active iframe { opacity: 1; }
 
 .home {
 	position: absolute;
@@ -847,4 +851,147 @@ button { cursor: pointer; }
 	.status-text { display: none; }
 	#stealthBtn, #popoutBtn { display: none; }
 	.drawer { width: 100vw; }
+}
+
+/* ---------------------------------------------------------------------------
+   Stellar skin — the browser inherits the hub's deep-space palette instead of
+   the flat utility grey it shipped with. Presentation only: the chrome keeps
+   its original geometry so go.js measurements stay valid.
+   --------------------------------------------------------------------------- */
+
+body {
+	background:
+		radial-gradient(1100px 620px at 14% -12%, rgba(239, 51, 64, 0.12), transparent 66%),
+		radial-gradient(900px 560px at 88% 108%, rgba(124, 92, 255, 0.14), transparent 68%),
+		var(--bg);
+}
+
+/* Starfield: two static dot layers drifting at different rates. */
+body::before,
+body::after {
+	content: "";
+	position: fixed;
+	inset: -20%;
+	z-index: 0;
+	pointer-events: none;
+	opacity: 0.5;
+}
+
+body::before {
+	background-image:
+		radial-gradient(1.4px 1.4px at 20% 30%, rgba(255, 255, 255, 0.8), transparent 60%),
+		radial-gradient(1.2px 1.2px at 70% 64%, rgba(255, 255, 255, 0.7), transparent 60%),
+		radial-gradient(1px 1px at 44% 82%, rgba(255, 255, 255, 0.6), transparent 60%),
+		radial-gradient(1.3px 1.3px at 84% 18%, rgba(255, 255, 255, 0.75), transparent 60%),
+		radial-gradient(1px 1px at 12% 68%, rgba(255, 255, 255, 0.5), transparent 60%);
+	background-size: 460px 460px;
+	animation: go-drift 90s linear infinite;
+}
+
+body::after {
+	background-image:
+		radial-gradient(1px 1px at 33% 22%, rgba(200, 220, 255, 0.7), transparent 60%),
+		radial-gradient(1.6px 1.6px at 62% 48%, rgba(255, 210, 220, 0.6), transparent 60%),
+		radial-gradient(1px 1px at 88% 76%, rgba(255, 255, 255, 0.55), transparent 60%);
+	background-size: 720px 720px;
+	animation: go-drift 140s linear infinite reverse;
+}
+
+@keyframes go-drift {
+	from { transform: translate3d(0, 0, 0); }
+	to { transform: translate3d(-240px, -180px, 0); }
+}
+
+.chrome {
+	background: linear-gradient(180deg, rgba(16, 19, 28, 0.94), rgba(10, 12, 18, 0.88));
+	backdrop-filter: blur(22px) saturate(150%);
+	-webkit-backdrop-filter: blur(22px) saturate(150%);
+	border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+	box-shadow: 0 18px 44px -30px rgba(0, 0, 0, 1);
+	z-index: 10;
+}
+
+/* Animated gradient hairline under the chrome. */
+.chrome::after {
+	content: "";
+	position: absolute;
+	left: 0;
+	right: 0;
+	bottom: -1px;
+	height: 1px;
+	background: linear-gradient(90deg, transparent, var(--accent), #7c5cff, #26d0d6, transparent);
+	background-size: 220% 100%;
+	animation: go-slide 8s linear infinite;
+	opacity: 0.75;
+}
+
+@keyframes go-slide {
+	from { background-position: 0% 50%; }
+	to { background-position: 220% 50%; }
+}
+
+.chrome-mark {
+	border-radius: 9px;
+	box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1), 0 8px 22px -10px rgba(239, 51, 64, 0.9);
+}
+
+.chrome-word {
+	background: linear-gradient(100deg, #fff, #ffe3e5 40%, #fff 70%, #cdd7ff);
+	background-size: 220% 100%;
+	-webkit-background-clip: text;
+	background-clip: text;
+	-webkit-text-fill-color: transparent;
+	animation: go-slide 9s linear infinite;
+}
+
+.engine-btn {
+	border-radius: 99px;
+	transition: color 0.2s ease, background 0.24s ease, border-color 0.24s ease,
+		box-shadow 0.24s ease, transform 0.24s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.engine-btn:hover { transform: translateY(-1px); }
+
+.engine-btn.is-active {
+	background: linear-gradient(120deg, rgba(239, 51, 64, 0.34), rgba(124, 92, 255, 0.26));
+	border-color: rgba(239, 51, 64, 0.5);
+	color: #fff;
+	box-shadow: 0 8px 22px -12px rgba(239, 51, 64, 0.95);
+}
+
+.url-bar {
+	background: rgba(255, 255, 255, 0.045);
+	border: 1px solid rgba(255, 255, 255, 0.1);
+	transition: border-color 0.2s ease, box-shadow 0.26s ease, background 0.2s ease;
+}
+
+.url-bar:focus-within {
+	border-color: rgba(239, 51, 64, 0.5);
+	background: rgba(255, 255, 255, 0.06);
+	box-shadow: 0 0 0 3px rgba(239, 51, 64, 0.13), 0 12px 30px -20px rgba(239, 51, 64, 0.9);
+}
+
+.home-card,
+.recent-chip {
+	transition: transform 0.26s cubic-bezier(0.34, 1.56, 0.64, 1), border-color 0.24s ease,
+		box-shadow 0.24s ease, background 0.24s ease;
+}
+
+.home-card:hover {
+	transform: translateY(-3px);
+	border-color: rgba(239, 51, 64, 0.42);
+	box-shadow: 0 20px 40px -26px rgba(239, 51, 64, 0.9);
+}
+
+.home-eyebrow { text-shadow: 0 0 16px rgba(255, 89, 99, 0.45); }
+
+.boot {
+	background: radial-gradient(700px 420px at 50% 40%, rgba(124, 92, 255, 0.14), transparent 72%), var(--bg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+	body::before,
+	body::after,
+	.chrome::after,
+	.chrome-word { animation: none !important; }
 }

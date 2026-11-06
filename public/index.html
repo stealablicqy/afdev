@@ -7,53 +7,93 @@
   <meta name="description" content="AF Game Hub — games, music, a browser and an AI assistant in one place.">
   <title>AF Game Hub</title>
   <link rel="manifest" href="manifest.webmanifest">
-  <link rel="icon" href="assets/falcon.png" type="image/png">
-  <link rel="apple-touch-icon" href="assets/falcon.png">
-  <link rel="stylesheet" href="css/app.css?v=13">
-  <link rel="stylesheet" href="css/desync-inspired.css?v=13">
-  <link rel="stylesheet" href="css/revamp.css?v=13">
-  <link rel="stylesheet" href="css/af-music.css?v=13">
-  <link rel="stylesheet" href="css/browser.css?v=13">
+  <link rel="icon" href="assets/logo.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="assets/logo.svg">
+  <link rel="stylesheet" href="css/app.css?v=17">
+  <link rel="stylesheet" href="css/desync-inspired.css?v=17">
+  <link rel="stylesheet" href="css/revamp.css?v=17">
+  <link rel="stylesheet" href="css/af-music.css?v=17">
+  <link rel="stylesheet" href="css/browser.css?v=17">
+  <link rel="stylesheet" href="css/stellar.css?v=17">
+  <link rel="stylesheet" href="css/neon.css?v=17">
   <script defer src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
-  <script defer src="js/supabase-client.js?v=13"></script>
-  <script defer src="js/db.js?v=13"></script>
-  <script defer src="js/games-catalog.js?v=13"></script>
-  <script defer src="js/games.js?v=13"></script>
-  <script defer src="js/music.js?v=13"></script>
-  <script defer src="js/cloak.js?v=13"></script>
-  <script defer src="js/cloak-ui.js?v=13"></script>
-  <script defer src="js/app.js?v=13"></script>
+  <script defer src="js/supabase-client.js?v=17"></script>
+  <script defer src="js/db.js?v=17"></script>
+  <script defer src="js/games-catalog.js?v=17"></script>
+  <script defer src="js/games.js?v=17"></script>
+  <script defer src="js/movies-catalog.js?v=17"></script>
+  <script defer src="js/music.js?v=17"></script>
+  <script defer src="js/cloak.js?v=17"></script>
+  <script defer src="js/cloak-guard.js?v=17"></script>
+  <script defer src="js/cloak-ui.js?v=17"></script>
+  <script defer src="js/app.js?v=17"></script>
+  <script defer src="js/stellar.js?v=17"></script>
 </head>
 <body>
   <div class="app-shell" id="appShell">
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="#home" aria-label="AF Game Hub home">
-        <img class="brand-mark brand-falcon" src="assets/falcon.png" alt="" width="38" height="38">
-        <span class="brand-copy"><strong>AF GAME HUB</strong><small>PERSONAL CHROMEBOOK HUB</small></span>
+        <img class="brand-mark brand-falcon" src="assets/logo.svg" alt="" width="38" height="38">
+        <span class="brand-copy"><strong>AF GAME HUB</strong><small>STELLAR EDITION</small></span>
       </a>
       <div class="sidebar-rule"></div>
-            <nav class="side-nav" aria-label="Main navigation">
+      <nav class="side-nav" aria-label="Main navigation">
         <div class="nav-caption">HOME</div>
-        <a class="nav-link active" href="#home" data-route="home" title="Home"><span class="nav-icon">⌂</span><span>Home</span><kbd>H</kbd></a>
-        <a class="nav-link" href="go/" title="Browse the web through the proxy ladder"><span class="nav-icon">⌕</span><span>Browse web</span><span class="nav-pill">LIVE</span></a>
-        <a class="nav-link" href="#web" data-route="web" title="Browser"><span class="nav-icon">◍</span><span>Browser</span></a>
+        <a class="nav-link active" href="#home" data-route="home" title="Home">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 10.4 12 3.6l8.5 6.8"/><path d="M5.6 9.6V20h12.8V9.6"/><path d="M9.8 20v-5.4h4.4V20"/></svg></span>
+          <span>Home</span><kbd>H</kbd>
+        </a>
+        <a class="nav-link" href="go/" title="Browse the web through the proxy ladder">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.4"/><path d="M3.6 12h16.8"/><path d="M12 3.6c2.4 2.5 3.6 5.3 3.6 8.4S14.4 18 12 20.4C9.6 17.9 8.4 15.1 8.4 12S9.6 6.1 12 3.6z"/></svg></span>
+          <span>Browse web</span><span class="nav-pill">LIVE</span>
+        </a>
+        <a class="nav-link" href="#web" data-route="web" title="Browser">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.4" y="4.6" width="17.2" height="14.8" rx="2.4"/><path d="M3.4 8.6h17.2"/><circle cx="6.4" cy="6.6" r=".6" fill="currentColor" stroke="none"/><circle cx="8.6" cy="6.6" r=".6" fill="currentColor" stroke="none"/></svg></span>
+          <span>Browser</span>
+        </a>
         <div class="nav-caption nav-caption-spaced">EXPLORE</div>
-        <a class="nav-link" href="#games" data-route="games" title="Games"><span class="nav-icon">▣</span><span>Games</span><span class="nav-count" id="gameCount">05</span></a>
-        <a class="nav-link" href="#music" data-route="music" title="Music"><span class="nav-icon">♫</span><span>Music</span></a>
-        <a class="nav-link" href="#ai" data-route="ai" title="AI assistant"><span class="nav-icon">✧</span><span>AI assistant</span></a>
-        <a class="nav-link" href="#apps" data-route="apps" title="Apps"><span class="nav-icon">▦</span><span>Apps</span></a>
-        <a class="nav-link" href="#movies" data-route="movies" title="Movies & media"><span class="nav-icon">▷</span><span>Movies & media</span></a>
-        <a class="nav-link" href="#community" data-route="community" title="Chat"><span class="nav-icon">☷</span><span>Chat & friends</span></a>
+        <a class="nav-link" href="#games" data-route="games" title="Games">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.6 7.4h8.8a4.6 4.6 0 0 1 4.5 5.5l-.7 4a2.6 2.6 0 0 1-4.5 1.2l-1.8-2.1H9.1l-1.8 2.1a2.6 2.6 0 0 1-4.5-1.2l-.7-4a4.6 4.6 0 0 1 4.5-5.5z"/><path d="M8 10.6v2.8M6.6 12h2.8"/><circle cx="15.6" cy="11.3" r=".85" fill="currentColor" stroke="none"/><circle cx="17.8" cy="13.2" r=".85" fill="currentColor" stroke="none"/></svg></span>
+          <span>Games</span><span class="nav-count" id="gameCount">05</span>
+        </a>
+        <a class="nav-link" href="#music" data-route="music" title="Music">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9.4 18.2V6.4l9.2-1.8v11.6"/><circle cx="6.8" cy="18.4" r="2.6"/><circle cx="16" cy="16.6" r="2.6"/></svg></span>
+          <span>Music</span>
+        </a>
+        <a class="nav-link" href="#ai" data-route="ai" title="AI assistant">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.2l1.9 5.2 5.2 1.9-5.2 1.9L12 17.4l-1.9-5.2L4.9 10.3l5.2-1.9z"/><path d="M18.4 15.6l.8 2.2 2.2.8-2.2.8-.8 2.2-.8-2.2-2.2-.8 2.2-.8z"/></svg></span>
+          <span>AI assistant</span>
+        </a>
+        <a class="nav-link" href="#apps" data-route="apps" title="Apps">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.8" y="3.8" width="7" height="7" rx="1.8"/><rect x="13.2" y="3.8" width="7" height="7" rx="1.8"/><rect x="3.8" y="13.2" width="7" height="7" rx="1.8"/><rect x="13.2" y="13.2" width="7" height="7" rx="1.8"/></svg></span>
+          <span>Apps</span>
+        </a>
+        <a class="nav-link" href="#movies" data-route="movies" title="Movies">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.4" y="7" width="17.2" height="12.6" rx="2.2"/><path d="M3.4 11.2h17.2"/><path d="M7.6 7 5.8 3.6M12 7l-1.8-3.4M16.4 7l-1.8-3.4"/><path d="M9.6 14.4l4.4 2.4-4.4 2.4z" fill="currentColor" stroke="none"/></svg></span>
+          <span>Movies</span>
+        </a>
         <div class="nav-caption nav-caption-spaced">TOOLS</div>
-        <a class="nav-link" href="#study" data-route="study" title="Study tools"><span class="nav-icon">∑</span><span>Study tools</span></a>
-        <a class="nav-link" href="#notes" data-route="notes" title="Notes"><span class="nav-icon">▤</span><span>Notes</span></a>
+        <a class="nav-link" href="#study" data-route="study" title="Study tools">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.4h5.6a2.4 2.4 0 0 1 2.4 2.4V20a2 2 0 0 0-2-2H4z"/><path d="M20 5.4h-5.6a2.4 2.4 0 0 0-2.4 2.4V20a2 2 0 0 1 2-2H20z"/></svg></span>
+          <span>Study tools</span>
+        </a>
+        <a class="nav-link" href="#notes" data-route="notes" title="Notes">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.2 3.8h9.2l4.4 4.4v12H5.2z"/><path d="M14.4 3.8v4.4h4.4"/><path d="M8.4 12.6h7.2M8.4 16h4.8"/></svg></span>
+          <span>Notes</span>
+        </a>
       </nav>
       <div class="sidebar-bottom">
         <div class="sidebar-status"><span class="status-dot"></span><span>Personal mode</span><span class="status-badge">LOCAL</span></div>
-        <a class="nav-link" href="#settings" data-route="settings" title="Settings"><span class="nav-icon">⚙</span><span>Settings</span></a>
-        <a class="nav-link" href="#account" data-route="account" title="Profile"><span class="nav-icon">◉</span><span>My profile</span></a>
+        <a class="nav-link" href="#settings" data-route="settings" title="Settings">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 14.6a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-2.87 1.2v.16a2 2 0 1 1-4 0v-.08a1.7 1.7 0 0 0-2.93-1.16l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.4 14.6a1.7 1.7 0 0 0-1.55-1H2.7a2 2 0 1 1 0-4h.08a1.7 1.7 0 0 0 1.16-2.93l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9.4 4.4h.08a1.7 1.7 0 0 0 1-1.55V2.7a2 2 0 1 1 4 0v.08a1.7 1.7 0 0 0 2.93 1.16l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0 1.2 2.87h.16a2 2 0 1 1 0 4h-.08a1.7 1.7 0 0 0-1.55 1z"/></svg></span>
+          <span>Settings</span>
+        </a>
+        <a class="nav-link" href="#account" data-route="account" title="Profile">
+          <span class="nav-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8.4" r="3.6"/><path d="M4.8 20.4a7.2 7.2 0 0 1 14.4 0"/></svg></span>
+          <span>My profile</span>
+        </a>
         <div class="sidebar-profile">
-          <div class="profile-avatar"><img src="assets/falcon.png" alt="" width="26" height="26"></div>
+          <div class="profile-avatar"><img src="assets/logo.svg" alt="" width="26" height="26"></div>
           <div class="profile-info"><strong id="sideProfileName">Personal profile</strong><small>Saved on this device</small></div>
           <button class="icon-button tiny" id="profileMenuBtn" aria-label="Profile information" title="Profile">···</button>
         </div>
@@ -72,6 +112,7 @@
             <input id="globalSearch" type="search" placeholder="Search games, apps, websites…" autocomplete="off" aria-label="Search hub">
             <kbd>⌘ K</kbd>
           </form>
+          <button class="icon-button" id="coverTabBtn" data-action="cover-tab" title="Open a blank cover tab" aria-label="Open cover tab"><svg viewBox="0 0 24 24" aria-hidden="true" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="13" height="11" rx="2"/><path d="M8 19h11a2 2 0 0 0 2-2V9"/></svg></button>
           <button class="icon-button" id="themeQuickBtn" title="Toggle theme" aria-label="Toggle theme">◐</button>
           <div class="cloak-wrap">
             <button class="icon-button" id="cloakBtn" title="Disguise this tab (Alt+X for panic)" aria-haspopup="true" aria-expanded="false" aria-label="Tab disguise">
@@ -81,10 +122,10 @@
               <p class="cloak-title">Tab disguise</p>
               <div class="cloak-list" id="cloakList"></div>
               <label class="cloak-panic">Panic key<select id="cloakPanic"></select></label>
-              <p class="cloak-hint">Alt+X swaps to the panic disguise at any time.</p>
+              <p class="cloak-hint">Alt+X covers the screen and repaints the tab. Alt+Shift+C opens a decoy tab. The cover comes on by itself when you switch away.</p>
             </div>
           </div>
-          <button class="profile-chip" id="profileChip" title="Local profile"><span class="profile-avatar small"><img src="assets/falcon.png" alt="" width="22" height="22"></span><span>Personal</span><span class="chevron">⌄</span></button>
+          <button class="profile-chip" id="profileChip" title="Local profile"><span class="profile-avatar small"><img src="assets/logo.svg" alt="" width="22" height="22"></span><span>Personal</span><span class="chevron">⌄</span></button>
         </div>
       </header>
 
@@ -118,14 +159,14 @@
     </div>
   </div>
   <div class="privacy-cover" id="privacyCover" hidden aria-live="polite">
-    <div class="privacy-cover-card"><img class="privacy-cover-mark" src="assets/falcon.png" alt="" width="64" height="64"><div class="privacy-cover-eyebrow">PRIVATE SCREEN</div><h2>Session paused</h2><p>Press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> again to return.</p><small>This cover only changes what is displayed on this screen. It does not erase browser history or network records.</small></div>
+    <div class="privacy-cover-card"><img class="privacy-cover-mark" src="assets/logo.svg" alt="" width="64" height="64"><div class="privacy-cover-eyebrow">PRIVATE SCREEN</div><h2>Session paused</h2><p>Press <kbd>Alt</kbd> + <kbd>Shift</kbd> + <kbd>P</kbd> again to return.</p><small>This cover only changes what is displayed on this screen. It does not erase browser history or network records.</small></div>
   </div>
   <div class="toast-stack" id="toastStack" aria-live="polite" aria-atomic="false"></div>
   <div class="dialog-layer" id="dialogLayer" hidden></div>
   <audio id="audioEngine" preload="metadata"></audio>
   <script>
     if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-      window.addEventListener('load', async () => { try { await navigator.serviceWorker.register('./sw.js'); const registration = await navigator.serviceWorker.ready; const prefs = JSON.parse(localStorage.getItem('afhub.v1.securitySettings') || '{\"trackerShield\":true}'); registration.active?.postMessage({type:'AFHUB_SHIELD', enabled:prefs.trackerShield !== false}); } catch {} });
+      window.addEventListener('load', async () => { try { await navigator.serviceWorker.register('./sw.js'); const registration = await navigator.serviceWorker.ready; const prefs = JSON.parse(localStorage.getItem('afhub.v1.securitySettings') || '{"trackerShield":true}'); registration.active?.postMessage({type:'AFHUB_SHIELD', enabled:prefs.trackerShield!==false}); } catch {} });
     }
   </script>
 </body>

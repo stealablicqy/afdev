@@ -6,16 +6,16 @@
   screen to an iframe inside the worker's scope. The worker answers that
   navigation with index.html and the correct content type.
 
-  Open: https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/public/index.svg
+  Open: https://cdn.jsdelivr.net/gh/stealablicqy/afdev@HEAD/public/index.svg
 
   This document owns the tab title and favicon, so the tab cloak lives here as
   well as in the app frame: a saved preset is painted before the frame loads,
   and every later change arrives over postMessage.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="position: fixed; inset: 0; background: #0b0c10;">
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="position: fixed; inset: 0; background: #05060b;">
   <title>Math | Practice and Lessons</title>
   <foreignObject x="0" y="0" width="100%" height="100%">
-    <body xmlns="http://www.w3.org/1999/xhtml" style="margin: 0; width: 100%; height: 100%; overflow: hidden; background: #0b0c10;">
+    <body xmlns="http://www.w3.org/1999/xhtml" style="margin: 0; width: 100%; height: 100%; overflow: hidden; background: #05060b;">
       <iframe id="afFrame" title="App" style="border: 0; width: 100%; height: 100%; display: block;" allow="fullscreen; autoplay; encrypted-media; picture-in-picture; clipboard-read; clipboard-write; gamepad; camera; microphone; display-capture" allowfullscreen="true"></iframe>
       <div id="afMsg" style="position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; color: #9a9a9a; font: 15px system-ui, sans-serif; pointer-events: none;">Starting…</div>
     </body>
@@ -28,13 +28,52 @@
 
     // Mirror of js/cloak.js presets, kept here so a saved cloak paints on the
     // first frame instead of waiting for the app to boot inside the iframe.
+    // Each entry carries the same brand artwork the app uses.
     var CLOAKS = {
-      classroom: { title: "Classes", color: "#1a73e8", letter: "C" },
-      docs: { title: "Untitled document - Google Docs", color: "#4285f4", letter: "D" },
-      ixl: { title: "IXL | Math, Language Arts, Science, Social Studies", color: "#ff8b00", letter: "I" },
-      drive: { title: "My Drive - Google Drive", color: "#0f9d58", letter: "\u25a4" },
-      quizlet: { title: "Flashcards, learning tools and textbook solutions | Quizlet", color: "#4255ff", letter: "Q" },
-      canvas: { title: "Dashboard", color: "#e0342b", letter: "\u25c8" }
+      classroom: {
+        title: "Classes",
+        svg: '<rect width="64" height="64" rx="14" fill="#0f9d58"/><rect x="14" y="16" width="36" height="26" rx="4" fill="#ffffff"/><rect x="18" y="20" width="28" height="18" rx="2" fill="#0f9d58"/><rect x="22" y="25" width="14" height="2.6" rx="1.3" fill="#ffe082"/><rect x="22" y="30" width="10" height="2.6" rx="1.3" fill="#ffffff" fill-opacity=".85"/><rect x="24" y="42" width="16" height="3.4" rx="1.7" fill="#e8f5e9"/><circle cx="32" cy="51.5" r="2.6" fill="#ffe082"/>'
+      },
+      docs: {
+        title: "Untitled document - Google Docs",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><path d="M20 10h17l11 11v33a4 4 0 0 1-4 4H20a4 4 0 0 1-4-4V14a4 4 0 0 1 4-4z" fill="#4285f4"/><path d="M37 10l11 11H37z" fill="#a1c2fa"/><rect x="23" y="30" width="20" height="3" rx="1.5" fill="#ffffff"/><rect x="23" y="37" width="20" height="3" rx="1.5" fill="#ffffff"/><rect x="23" y="44" width="13" height="3" rx="1.5" fill="#ffffff"/>'
+      },
+      drive: {
+        title: "My Drive - Google Drive",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><path d="M24.5 12h15l12.5 22h-15z" fill="#fbbc04"/><path d="M24.5 12L12 34l7.5 13L32 25z" fill="#0f9d58"/><path d="M19.5 47h25L52 34H27z" fill="#4285f4"/>'
+      },
+      ixl: {
+        title: "IXL | Math, Language Arts, Science, Social Studies",
+        svg: '<rect width="64" height="64" rx="14" fill="#ff8b00"/><rect x="12" y="24" width="6" height="20" rx="2" fill="#ffffff"/><path d="M24 44L32 20l8 24" fill="none" stroke="#ffffff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/><rect x="43" y="24" width="6" height="20" rx="2" fill="#ffffff"/>'
+      },
+      quizlet: {
+        title: "Flashcards, learning tools and textbook solutions | Quizlet",
+        svg: '<rect width="64" height="64" rx="14" fill="#4255ff"/><rect x="15" y="15" width="34" height="34" rx="7" fill="#ffffff"/><rect x="19" y="19" width="26" height="26" rx="5" fill="#4255ff"/><circle cx="32" cy="32" r="7" fill="none" stroke="#ffffff" stroke-width="4.2"/><rect x="36" y="36" width="9" height="4.2" rx="2.1" fill="#ffffff" transform="rotate(45 40.5 38.1)"/>'
+      },
+      canvas: {
+        title: "Dashboard",
+        svg: '<rect width="64" height="64" rx="14" fill="#e0342b"/><path d="M46 24a17 17 0 1 0 0 16" fill="none" stroke="#ffffff" stroke-width="6.4" stroke-linecap="round"/><circle cx="45" cy="32" r="3.4" fill="#ffffff"/>'
+      },
+      khan: {
+        title: "Khan Academy | Free Online Courses, Lessons & Practice",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><path d="M32 12c11 0 18 7 18 14 0 10-9 13-9 19 0 5 3 7 3 7-9 0-13-6-13-12 0-7 8-9 8-15 0-4-3-6-7-6-5 0-7 3-7 3l-4-6c3-3 6-4 11-4z" fill="#14bf96"/>'
+      },
+      gmail: {
+        title: "Inbox (3) - student@school.edu - Gmail",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><path d="M13 22l19 14 19-14v20a4 4 0 0 1-4 4H17a4 4 0 0 1-4-4z" fill="#ea4335"/><path d="M13 22v-2a4 4 0 0 1 6.4-3.2L32 29l12.6-12.2A4 4 0 0 1 51 20v2L32 36z" fill="#c5221f"/>'
+      },
+      google: {
+        title: "Google",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><path d="M49 32c0-1.2-.1-2.3-.3-3.4H32v6.5h9.6a8.2 8.2 0 0 1-3.6 5.4v4.5h5.8c3.4-3.1 5.2-7.7 5.2-13z" fill="#4285f4"/><path d="M32 50c4.6 0 8.5-1.5 11.3-4.1l-5.5-4.3c-1.5 1-3.5 1.7-5.8 1.7-4.5 0-8.3-3-9.6-7.1H16.6v4.5A18 18 0 0 0 32 50z" fill="#34a853"/><path d="M22.4 36.2a10.8 10.8 0 0 1 0-6.8v-4.6H16.6a18 18 0 0 0 0 16z" fill="#fbbc04"/><path d="M32 20.6c2.5 0 4.7.9 6.5 2.6l4.7-4.7A17 17 0 0 0 32 14a18 18 0 0 0-15.4 8.8l5.8 4.6c1.3-4.1 5.1-6.8 9.6-6.8z" fill="#ea4335"/>'
+      },
+      wikipedia: {
+        title: "Wikipedia, the free encyclopedia",
+        svg: '<rect width="64" height="64" rx="14" fill="#ffffff"/><text x="32" y="45" font-family="Georgia,Times New Roman,serif" font-size="34" font-weight="700" fill="#111" text-anchor="middle">W</text>'
+      },
+      schoology: {
+        title: "Home | Schoology",
+        svg: '<rect width="64" height="64" rx="14" fill="#0f7dbf"/><path d="M43 22c-2.4-3-6.1-4.6-10.2-4.6-6.2 0-10.6 3-10.6 7.8 0 4.2 3.2 6.4 9.2 7.6 4.6 1 6 1.7 6 3.2 0 1.7-1.8 2.7-4.8 2.7-3.4 0-6.2-1.3-8.4-3.6l-3.4 4.6C24 43.5 28.4 45.6 33 45.6c6.6 0 11.2-3.2 11.2-8.2 0-4.4-3-6.6-9.4-7.8-4.4-.9-5.8-1.6-5.8-3 0-1.4 1.7-2.4 4.4-2.4 2.7 0 5 1 6.8 2.8z" fill="#ffffff"/>'
+      }
     };
 
     var baseTitle = document.title;
@@ -42,10 +81,9 @@
 
     function iconData(preset) {
       var svg =
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">' +
-        '<rect width="64" height="64" rx="14" fill="' + preset.color + '"/>' +
-        '<text x="32" y="44" font-family="Arial,Helvetica,sans-serif" font-size="34"' +
-        ' font-weight="700" fill="#ffffff" text-anchor="middle">' + preset.letter + '</text></svg>';
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">' +
+        preset.svg +
+        '</svg>';
       return "data:image/svg+xml," + encodeURIComponent(svg);
     }
 
@@ -63,13 +101,13 @@
     function paint(id) {
       var preset = id && CLOAKS[id];
       document.title = preset ? preset.title : baseTitle;
-      setIcon(preset ? iconData(preset) : baseIcon || BASE + "assets/falcon.png");
+      setIcon(preset ? iconData(preset) : baseIcon || BASE + "assets/logo.svg");
     }
 
     try {
       baseIcon = localStorage.getItem("af.cloak.baseIcon") || "";
-      if (!baseIcon) {
-        baseIcon = BASE + "assets/falcon.png";
+      if (!baseIcon || baseIcon.indexOf("falcon") !== -1) {
+        baseIcon = BASE + "assets/logo.svg";
         localStorage.setItem("af.cloak.baseIcon", baseIcon);
       }
       paint(localStorage.getItem("af.cloak.preset"));
@@ -88,6 +126,26 @@
       }
     });
 
+    // Cover tab: the app asks for a decoy tab so the visible tab is a painted
+    // school page on about:blank while this frame keeps loading behind it. The
+    // hub never calls window.focus() after this, because the point is for the
+    // monitored tab to stay in the background.
+    addEventListener("message", function (event) {
+      var data = event.data;
+      if (!data || data.af !== "cover") return;
+      try {
+        var id = null;
+        try { id = localStorage.getItem("af.cloak.preset"); } catch (e) {}
+        var decoy = window.open("about:blank", "_blank");
+        if (decoy) {
+          try { decoy.document.title = (id && CLOAKS[id] && CLOAKS[id].title) || "Classes"; } catch (e) {}
+          decoy.focus();
+        }
+      } catch (e) {
+        /* popup blocked: the app's own window.open already tried */
+      }
+    });
+
     function say(text) {
       msg.textContent = text || "";
       msg.style.display = text ? "flex" : "none";
@@ -97,7 +155,7 @@
       // Synthetic path: the worker turns any document request in its scope into
       // the app shell, so the URL does not have to name a real file. The version
       // query keeps a CDN-cached shell from pinning an old build.
-      frame.src = BASE + "app?v=13";
+      frame.src = BASE + "app?v=15";
       say("");
     }
 

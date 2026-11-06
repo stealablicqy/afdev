@@ -1,0 +1,137 @@
+/* Stellar backdrop — canvas, atmosphere and film grain.
+   The canvas is painted by stellar.js; everything here is the glass in front of
+   it: a deep-space base gradient, a vignette that keeps the sidebar readable,
+   and a grain plate that stops large gradients from banding on cheap panels. */
+
+:root {
+  --sky-0: #04050a;
+  --sky-1: #070917;
+  --sky-2: #0b0716;
+  --mx: 50vw;
+  --my: 50vh;
+}
+
+html {
+  background: var(--sky-0);
+}
+
+body {
+  background:
+    radial-gradient(1200px 800px at 12% -10%, rgba(124, 92, 255, 0.16), transparent 62%),
+    radial-gradient(900px 700px at 96% 8%, rgba(255, 71, 110, 0.11), transparent 60%),
+    radial-gradient(1100px 900px at 50% 118%, rgba(38, 208, 214, 0.09), transparent 64%),
+    linear-gradient(168deg, var(--sky-0) 0%, var(--sky-1) 46%, var(--sky-2) 100%);
+  background-attachment: fixed;
+}
+
+#afStarfield {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.92;
+  transition: opacity 0.6s ease;
+  mix-blend-mode: screen;
+}
+
+/* Atmosphere: a vignette that darkens the edges so panels keep contrast, plus a
+   faint scanline layer that gives the whole page a screen-like texture. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 90% at 50% 45%, transparent 40%, rgba(2, 3, 8, 0.55) 100%),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+  opacity: 0.9;
+}
+
+/* Grain. Static, generated noise so there is no runtime cost. */
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  opacity: 0.035;
+  background-image: url("data:image/svg+xml;utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='140' height='140' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 140px 140px;
+  animation: af-grain-shift 7s steps(6) infinite;
+}
+
+@keyframes af-grain-shift {
+  0% { transform: translate3d(0, 0, 0); }
+  20% { transform: translate3d(-2%, 1%, 0); }
+  40% { transform: translate3d(1%, -2%, 0); }
+  60% { transform: translate3d(-1%, -1%, 0); }
+  80% { transform: translate3d(2%, 1%, 0); }
+  100% { transform: translate3d(0, 0, 0); }
+}
+
+/* The app sits above the sky. */
+.app-shell,
+.mini-player,
+.toast-stack,
+.dialog-layer,
+.privacy-cover {
+  position: relative;
+  z-index: 10;
+}
+
+.mini-player {
+  z-index: 40;
+}
+.dialog-layer {
+  z-index: 90;
+}
+.privacy-cover {
+  z-index: 120;
+}
+
+/* A soft cursor bloom. Uses the pointer position stellar.js writes to the root
+   so it costs nothing per frame beyond a paint. */
+body::before {
+  background-image:
+    radial-gradient(320px 320px at var(--mx) var(--my), rgba(150, 130, 255, 0.05), transparent 70%),
+    radial-gradient(120% 90% at 50% 45%, transparent 40%, rgba(2, 3, 8, 0.55) 100%),
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+}
+
+/* Motion preferences and the settings switch both land here. */
+body.reduced-motion #afStarfield,
+body.no-background #afStarfield {
+  display: none !important;
+}
+
+body.reduced-motion::before,
+body.reduced-motion::after,
+body.no-background::after {
+  animation: none !important;
+}
+
+body.no-background {
+  background: var(--sky-0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body::after {
+    animation: none;
+  }
+}
