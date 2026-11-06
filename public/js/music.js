@@ -703,9 +703,12 @@
   let ytRecovering = false;
   let ytLoadSerial = 0;
   let ytWatchdog = 0;
+  // True when a YouTube row is being served by the audio element because the
+  // embed was unavailable. The UI then reads the audio element, not the frame.
+  let ytSuspended = false;
 
   function ytActive() {
-    return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
+    return !ytSuspended && !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
   }
 
   // Title comparison for same-song matching. Upload titles arrive as
@@ -799,6 +802,7 @@
   function ytLoad(videoId) {
     ensureYT();
     const serial = ++ytLoadSerial;
+    ytSuspended = false;
     ytVideoId = videoId;
     ytState = -1;
     ytTime = 0;
@@ -893,7 +897,7 @@
   async function ytTryVideo(videoId) {
     if (!videoId || ytBlocked.has(videoId)) return false;
     try { await ytLoad(videoId); } catch { return false; }
-    const playing = await ytWaitState(1, 5000);
+    const playing = await ytWaitState(1, 3500);
     if (!playing) ytBlocked.add(videoId);
     return playing;
   }
@@ -904,7 +908,7 @@
     const found = [];
     const queries = [`${track.title} ${track.artist}`.trim(), track.title];
     for (const query of queries) {
-      if (found.length >= 3) break;
+      if (found.length >= 2) break;
       let rows = [];
       try { rows = await pipedSearch(query, 25); } catch { rows = []; }
       for (const row of rows) {
@@ -913,7 +917,7 @@
         if (String(track.id) === `yt:${videoId}`) continue;
         if (!sameSong(row.title, track.title)) continue;
         found.push(videoId);
-        if (found.length >= 3) break;
+        if (found.length >= 2) break;
       }
     }
     return found;
@@ -944,6 +948,7 @@
     }
     const src = streamFor(track);
     if (!src) return false;
+    ytSuspended = true;
     audio.src = src;
     audio.load();
     audio.play().catch(() => AF.toast('Press play to start this track.', 'error'));
@@ -987,8 +992,12 @@
     if (!Number.isFinite(state)) return;
     ytState = state;
     if (state === 1) clearTimeout(ytWatchdog);
-    document.body.classList.toggle('music-playing', state === 1);
+    // Only a YouTube track owns the playing class. A native track pauses the
+    // frame on purpose and that pause event must not clear its state.
+    if (ytActive()) document.body.classList.toggle('music-playing', state === 1);
     if (state === 0) {
+      // A stray end event from the frame must not advance a native track.
+      if (!ytActive()) return;
       if (repeatMode === 'one') { ytCommand('seekTo', [0, true]); ytCommand('playVideo'); return; }
       nextTrack(1);
       return;
