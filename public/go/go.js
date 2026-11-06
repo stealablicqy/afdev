@@ -23,8 +23,14 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // Public relays come and go, and a stale default is the difference between a
 // working proxy and a dead one. Probed in order after the primary refuses; the
 // first socket that opens becomes the runtime relay and is remembered for the tab.
+// Measured 2026-11-06: anura is the only entry in this pool that completes a
+// handshake. The rest are kept as cheap probes because these hosts rotate back
+// online without notice, and a dead probe costs one timeout, not a session.
 const WISP_FALLBACKS = [
 	"wss://wisp.mercurywork.shop/",
+	"wss://wisp.egg.lol/",
+	"wss://wisp.birdcat.cafe/",
+	"wss://wisp.hydroxide.dev/",
 	"wss://wisp.quartz.rip/",
 	"wss://wisp.rhodes.rip/",
 ];
@@ -621,7 +627,7 @@ function probeWisp() {
 			state.health.wisp = verdict;
 			resolve(verdict);
 		};
-		const timer = setTimeout(() => done(false, "handshake timeout"), 6000);
+		const timer = setTimeout(() => done(false, "handshake timeout"), 4000);
 		try {
 			socket = new WebSocket(WISP_URL);
 		} catch (error) {
@@ -660,6 +666,32 @@ async function resolveWisp() {
 	return verdict;
 }
 
+// Sequential probing cost one full handshake timeout per dead host, so a pool
+// with five dead entries stalled boot for half a minute before the transport
+// even started. Racing them costs a single timeout and keeps the fastest relay.
+async function resolveWispFast() {
+	const primary = await probeWisp();
+	if (primary.state === "ok") return primary;
+
+	let stored = "";
+	try {
+		stored = localStorage.getItem(WISP_KEY) || "";
+	} catch {
+		// storage blocked: treat as no override
+	}
+	if (/^wss?:\/\//i.test(stored)) return primary;
+
+	const probes = await Promise.all(WISP_FALLBACKS.map((relay) => probeWispAt(relay).then((p) => ({ relay, ...p }))));
+	const winner = probes.filter((p) => p.state === "ok").sort((a, b) => a.ms - b.ms)[0];
+	if (!winner) return primary;
+
+	WISP_URL = winner.relay;
+	WISP_ROTATED = winner.relay;
+	state.health.wisp = { state: "ok", ms: winner.ms, at: winner.at, url: winner.relay, note: "rotated to " + new URL(winner.relay).host };
+	renderDrawer();
+	return state.health.wisp;
+}
+
 function probeWispAt(url) {
 	return new Promise((resolve) => {
 		const started = performance.now();
@@ -676,7 +708,7 @@ function probeWispAt(url) {
 			}
 			resolve({ state: ok ? "ok" : "bad", ms: Math.round(performance.now() - started), note: note || "", at: Date.now() });
 		};
-		const timer = setTimeout(() => done(false, "handshake timeout"), 6000);
+		const timer = setTimeout(() => done(false, "handshake timeout"), 4000);
 		try {
 			socket = new WebSocket(url);
 		} catch (error) {
@@ -1976,7 +2008,7 @@ async function boot() {
 	// at a socket that never opened.
 	try {
 		stage("wisp:begin");
-		await resolveWisp();
+		await resolveWispFast();
 		stage("wisp:done", new URL(WISP_URL).host);
 	} catch (error) {
 		stage("wisp:failed", String(error?.message || error));

@@ -693,6 +693,10 @@
   let ytTime = 0;
   let ytDuration = 0;
   let ytVolume = 80;
+  // Video ids whose owner disabled embedding (errors 101/150/151). Retrying the
+  // same id never helps, so they are remembered and skipped in the queue.
+  const ytBlocked = new Set();
+  let ytSkips = 0;
 
   function ytActive() {
     return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
@@ -725,7 +729,10 @@
     ytHost = document.createElement('div');
     ytHost.id = 'afYtHost';
     ytHost.setAttribute('aria-hidden', 'true');
-    ytHost.style.cssText = 'position:fixed;right:0;bottom:0;width:2px;height:2px;overflow:hidden;opacity:.01;pointer-events:none;z-index:-1';
+    // 220x220, not 2x2: YouTube refuses to init playback in a player smaller
+    // than the recommended minimum, and a clipped 1px player reports ready then
+    // stalls. The element keeps full size; the wrapper hides it.
+    ytHost.style.cssText = 'position:fixed;right:0;bottom:0;width:220px;height:220px;overflow:hidden;opacity:.01;pointer-events:none;z-index:-1';
     document.body.appendChild(ytHost);
     return ytHost;
   }
@@ -779,8 +786,8 @@
       const mount = document.createElement('div');
       ytHost.appendChild(mount);
       ytPlayer = new YT.Player(mount, {
-        width: '2',
-        height: '2',
+        width: '220',
+        height: '220',
         videoId,
         playerVars: {
           autoplay: 1, playsinline: 1, rel: 0, controls: 0,
@@ -793,8 +800,19 @@
           },
           onStateChange: (event) => applyYtState(Number(event.data)),
           onError: (event) => {
-            console.warn('youtube player error', event && event.data);
-            AF.toast('This track cannot be embedded. Pick another result.', 'error');
+            const code = Number(event && event.data);
+            console.warn('youtube player error', code);
+            if (code === 101 || code === 150 || code === 151) {
+              ytBlocked.add(String(ytVideoId));
+              ytSkips += 1;
+              if (ytSkips <= 5) {
+                AF.toast('That uploader blocks embedding — next track.', 'warning');
+                nextTrack(1);
+                return;
+              }
+            }
+            ytSkips = 0;
+            AF.toast('This track cannot be played. Pick another result.', 'error');
             applyYtState(2);
           }
         }
@@ -820,6 +838,7 @@
   function applyYtState(state) {
     if (!Number.isFinite(state)) return;
     ytState = state;
+    if (state === 1) ytSkips = 0;
     document.body.classList.toggle('music-playing', state === 1);
     if (state === 0) {
       if (repeatMode === 'one') { ytCommand('seekTo', [0, true]); ytCommand('playVideo'); return; }
