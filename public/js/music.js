@@ -7,6 +7,21 @@
   const AUDIUS = 'https://api.audius.co/v1';
   const ITUNES = 'https://itunes.apple.com';
   const APP_NAME = 'AFGameHub';
+  // Piped mirrors are the catalogue: their search endpoint is CORS-open and
+  // returns YouTube video ids plus real durations, which the hidden IFrame
+  // player below turns into full-length playback. Order matters — the first
+  // mirror that answers wins and is cached for the session.
+  const PIPED_APIS = [
+    'https://api.piped.private.coffee',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.reallyaweso.me',
+    'https://pipedapi.adminforge.de',
+    'https://pipedapi.kavin.rocks',
+    'https://piped-api.privacy.com.de',
+    'https://pipedapi.darkness.services',
+    'https://pipedapi.nosebs.ru'
+  ];
+  let pipedBase = '';
   let view = 'browse';
   let currentTrack = null;
   let queue = [];
@@ -61,7 +76,7 @@
       isStreamGated: raw.is_stream_gated === true || raw.isStreamGated === true,
       parentalWarningType: String(raw.parental_warning_type || raw.parentalWarningType || '').toLowerCase(),
       description: String(raw.description || '').slice(0,1200),
-      source: raw.source || (isItunes ? 'Apple Music preview' : 'Audius')
+      source: raw.source || (isItunes ? 'Preview clip' : 'Audius')
     };
     return track;
   }
@@ -88,20 +103,91 @@
       isStreamable: true,
       isStreamGated: false,
       parentalWarningType: String(raw.trackExplicitness === 'explicit' ? 'explicit' : 'none'),
-      description: `${raw.collectionName ? `${raw.collectionName}. ` : ''}30 second Apple Music preview. Full track opens in Apple Music.`,
-      source: 'Apple Music preview'
+      description: `${raw.collectionName ? `${raw.collectionName}. ` : ''}30 second Preview clip. Full track opens in Apple Music.`,
+      source: 'Preview clip'
     };
   }
+  function pipedBases() {
+    let cached = '';
+    try { cached = localStorage.getItem('af.music.piped') || ''; } catch {}
+    const list = PIPED_APIS.slice();
+    const first = cached || pipedBase;
+    if (first && list.includes(first)) {
+      return [first, ...list.filter(base => base !== first)];
+    }
+    return list;
+  }
+
+  function parseDurationLabel(value) {
+    if (typeof value === 'number') return value;
+    const text = String(value || '');
+    const parts = text.split(':').map(Number);
+    if (parts.some(n => !Number.isFinite(n))) return 0;
+    return parts.reduce((total, n) => total * 60 + n, 0);
+  }
+
+  // Piped search rows are flat objects, not Audius payloads. The video id lives
+  // in `url` as /watch?v=…; `yt:` keeps that namespace separate from Audius ids
+  // in storage, favourites and the queue.
+  function normalizePiped(raw) {
+    if (!raw || raw.type !== 'stream') return null;
+    const url = String(raw.url || '');
+    const videoId = (url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || [])[1]
+      || (String(raw.id || '').match(/([A-Za-z0-9_-]{11})$/) || [])[1]
+      || '';
+    if (!videoId) return null;
+    const title = String(raw.title || 'Untitled track').slice(0, 180);
+    if (!title || /^\[?(deleted|private) video\]?$/i.test(title)) return null;
+    const uploader = String(raw.uploaderName || raw.uploader || 'YouTube').replace(/\s*-\s*Topic$/i, '').trim();
+    const art = String(raw.thumbnail || '');
+    return {
+      id: `yt:${videoId}`,
+      title,
+      artist: uploader || 'YouTube',
+      artistId: `yt:${uploader}`,
+      artistHandle: '',
+      artwork: art.startsWith('http') ? art : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: parseDurationLabel(raw.duration),
+      genre: String(raw.category || 'Song'),
+      playCount: Number(raw.views || 0),
+      permalink: `https://www.youtube.com/watch?v=${videoId}`,
+      stream: `yt:${videoId}`,
+      isStreamable: true,
+      isStreamGated: false,
+      parentalWarningType: '',
+      description: 'Full length audio, played through the embedded YouTube player.',
+      source: 'YouTube'
+    };
+  }
+
+  async function pipedSearch(query, limit = 25) {
+    const term = String(query || '').trim();
+    if (!term) return [];
+    for (const base of pipedBases()) {
+      try {
+        const data = await fetchJson(`${base}/search?q=${encodeURIComponent(term)}&filter=music_songs`);
+        const rows = Array.isArray(data?.items) ? data.items : [];
+        const tracks = rows.map(normalizePiped).filter(Boolean);
+        if (tracks.length) {
+          pipedBase = base;
+          try { localStorage.setItem('af.music.piped', base); } catch {}
+          return tracks.slice(0, limit);
+        }
+      } catch {
+        // Dead mirror — fall through to the next one.
+      }
+    }
+    return [];
+  }
+
   function remember(track) {
     if (!track?.id) return;
     trackCache.set(track.id, track);
   }
   function allowed(track) {
-    if (!track || !track.id || !track.stream) return false;
-    if (String(track.id).startsWith('itunes:')) return true;
-    if (!track.isStreamable || track.isStreamGated) return false;
-    if (track.parentalWarningType && !['none','clean',''].includes(track.parentalWarningType)) return false;
-    return true;
+    // Nothing is filtered any more: every result plays. Explicit tracks,
+    // gated Audius uploads and YouTube rows all stream at full length.
+    return !!(track && track.id);
   }
   async function fetchJson(url) {
     const controller = new AbortController();
@@ -152,8 +238,8 @@
     });
   }
   async function popularTracks() {
-    const seeds = popularSeeds();
-    const batches = await Promise.allSettled(seeds.map(name => itunesSearch(name, 4)));
+    const seeds = popularSeeds(6);
+    const batches = await Promise.allSettled(seeds.map(name => pipedSearch(name, 8)));
     const merged = [];
     for (const batch of batches) if (batch.status === 'fulfilled') merged.push(...batch.value);
     return dedupe(merged);
@@ -199,7 +285,7 @@
     return `<div class="afm-library-actions"><button data-action="music-view" data-id="browse" class="${view==='browse'?'active':''}"><span>◉</span> Discover</button><button data-action="music-view" data-id="artists" class="${view==='artists'?'active':''}"><span>◍</span> Artists</button><button data-action="music-view" data-id="library" class="${view==='library'?'active':''}"><span>▤</span> Library</button><button data-action="music-view" data-id="favorites" class="${view==='favorites'?'active':''}"><span>♥</span> Liked Songs <small>${getFavorites().length}</small></button></div>
       <div class="afm-playlist-heading"><span>YOUR PLAYLISTS</span><button data-action="music-create-playlist" title="Create playlist">＋</button></div>
       <div class="afm-playlists">${lists.map(p=>`<button class="${view==='playlist'&&currentPlaylistId===p.id?'active':''}" data-action="music-playlist" data-id="${esc(p.id)}">♫ ${esc(p.name)} <small>${(p.trackIds||[]).length}</small></button>`).join('')}</div>
-      <div class="afm-provider-note"><strong>Music that actually plays</strong><p>Full tracks stream from independent creators on Audius. Mainstream releases play as 30 second Apple Music previews, so the whole catalog is searchable without a subscription.</p><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Browse Apple Music ↗</a></div>`;
+      <div class="afm-provider-note"><strong>Music that actually plays</strong><p>Full tracks stream from independent creators on Audius. Mainstream releases play as 30 second Preview clips, so the whole catalog is searchable without a subscription.</p><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Browse Apple Music ↗</a></div>`;
   }
   function headerTitle() {
     const list = getPlaylists();
@@ -342,7 +428,7 @@
     const lines = Array.isArray(lyrics.lines) ? lyrics.lines : [];
     if (!lines.length) return;
     // 120 ms of lead so a line lights up as it is sung, not after.
-    const head = (audio.currentTime || 0) * 1000 + 120;
+    const head = engineTime() * 1000 + 120;
     let index = -1;
     for (let i = 0; i < lines.length; i += 1) {
       if (typeof lines[i].time === 'number' && lines[i].time * 1000 <= head) index = i;
@@ -405,10 +491,10 @@
         ${playlistView()}
       </aside>
       <main class="afm-music-main">
-        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Apple Music previews · Full creator streams from Audius · Lyrics from LRCLIB</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Apple Music ↗</a></div></header>
+        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Full tracks · Mainstream catalogue plus independent creator streams · Lyrics from LRCLIB</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://music.youtube.com/" target="_blank" rel="noopener noreferrer">YouTube Music ↗</a></div></header>
         <div id="afmStatus" class="afm-status" hidden></div>
         <div id="afmContent"><div class="afm-loading"><span></span> Loading your music…</div></div>
-        <footer class="afm-music-footer">Mainstream tracks stream as Apple Music previews. Independent tracks stream from Audius, with artist names, artwork, and original links retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Audius Open Music License</a>.</footer>
+        <footer class="afm-music-footer">Mainstream tracks play full length through the embedded YouTube engine. Independent tracks stream directly from Audius, with artist names, artwork, and original links retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Audius Open Music License</a>.</footer>
       </main>
       ${lyricsPanel()}
     </div>`;
@@ -429,7 +515,7 @@
     const content = document.getElementById('afmContent');
     if (!content) return;
     content.innerHTML = '<div class="afm-loading"><span></span> Finding trending tracks…</div>';
-    setStatus('Connecting to the free Audius music catalog…');
+    setStatus('Loading the full-length catalogue…');
     try {
       const [popular, trending] = await Promise.allSettled([popularTracks(), audiusTrending(30)]);
       if (thisReq !== requestNo || !document.getElementById('afmContent')) return;
@@ -442,7 +528,7 @@
       tracks.forEach(remember);
       artistsCache = dedupe([...mainstream, ...indie]);
       visibleTracks = tracks;
-      setStatus(tracks.length ? `${tracks.length} playable tracks loaded from Apple Music and Audius.` : 'The catalog did not return playable tracks. Try refreshing.');
+      setStatus(tracks.length ? `${tracks.length} full tracks loaded.` : 'The catalogue did not return tracks. Try refreshing.');
       content.innerHTML = `${section('Popular right now',grid(mainstream.slice(0,18)))}${section('Trending on Audius',grid(indie.slice(0,12)))}${section('Popular artists',artistCards(artistsCache))}${section('Recently played',renderHistory())}`;
     } catch (err) {
       if (thisReq !== requestNo) return;
@@ -463,19 +549,19 @@
     const content = document.getElementById('afmContent');
     const form = document.getElementById('musicSearchForm');
     if (!content) { AF.renderRoute('music'); return; }
-    content.innerHTML = '<div class="afm-loading"><span></span> Searching tracks and artists…</div>';
-    setStatus('Searching Apple Music and Audius…');
+    content.innerHTML = '<div class="afm-loading"><span></span> Searching the catalogue…</div>';
+    setStatus('Searching full-length tracks…');
     const req = ++requestNo;
     try {
-      const [apple, audius] = await Promise.allSettled([itunesSearch(searchText, 25), audiusSearch(searchText, 25)]);
+      const [main, audius] = await Promise.allSettled([pipedSearch(searchText, 30), audiusSearch(searchText, 20)]);
       if (req !== requestNo) return;
-      const mainstream = apple.status === 'fulfilled' ? apple.value : [];
+      const mainstream = main.status === 'fulfilled' ? main.value : [];
       const indie = audius.status === 'fulfilled' ? audius.value : [];
       const tracks = dedupe([...mainstream, ...indie]);
       tracks.forEach(remember);
       visibleTracks = tracks;
-      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:`<div class="afm-empty">No playable match for “${esc(searchText)}”. Try the artist name on its own.</div>`)}${section('Artists',artistCards(tracks))}`;
-      setStatus(`${tracks.length} playable tracks · ${mainstream.length} Apple Music previews · ${indie.length} Audius streams.`);
+      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:`<div class="afm-empty">No match for “${esc(searchText)}”. Try the artist name on its own.</div>`)}${section('Artists',artistCards(tracks))}`;
+      setStatus(`${tracks.length} full tracks · ${mainstream.length} catalogue · ${indie.length} Audius.`);
     } catch (err) {
       if (req !== requestNo) return;
       setStatus(err.message,'error');
@@ -492,7 +578,10 @@
     const req = ++requestNo;
     try {
       let tracks = [];
-      if (String(id).startsWith('itunes:')) {
+      if (String(id).startsWith('yt:')) {
+        tracks = await pipedSearch(String(id).slice(3) || name || '', 40);
+        tracks = tracks.filter(track => track.artistId === String(id));
+      } else if (String(id).startsWith('itunes:')) {
         const data = await fetchJson(`${ITUNES}/lookup?id=${encodeURIComponent(String(id).slice(7))}&entity=song&limit=50&country=US`);
         tracks = (data.results || []).map(normalizeItunes).filter(Boolean);
       } else {
@@ -507,7 +596,7 @@
       if (req !== requestNo) return;
       tracks = dedupe(tracks);
       tracks.forEach(remember); visibleTracks = tracks;
-      const provider = String(id).startsWith('itunes:') ? 'Apple Music' : 'Audius';
+      const provider = String(id).startsWith('yt:') ? 'YouTube' : String(id).startsWith('itunes:') ? 'Apple Music' : 'Audius';
       content.innerHTML = `<section class="afm-artist-hero"><div class="afm-artist-orb">${tracks[0]?.artwork?`<img src="${esc(tracks[0].artwork)}" alt="" referrerpolicy="no-referrer">`:'♫'}</div><div><span class="afm-kicker">ARTIST</span><h2>${esc(name||'Artist')}</h2><p>${tracks.length} playable tracks on ${provider}</p><a href="${String(id).startsWith('itunes:')?'https://music.apple.com/':'https://audius.co/'}" target="_blank" rel="noopener noreferrer">Open on ${provider} ↗</a></div></section>${section('Tracks',tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable tracks were found for this artist.</div>')}`;
       setStatus(`${tracks.length} tracks loaded.`);
     } catch (err) { setStatus(err.message,'error'); content.innerHTML = '<div class="afm-empty">Could not load this artist right now.</div>'; }
@@ -573,6 +662,127 @@
     }));
     document.getElementById('afmNewFromPick')?.addEventListener('click',()=>{AF.closeDialog();createPlaylist();});
   }
+  /* ---- YouTube engine ---------------------------------------------------
+     Mainstream rows carry a `yt:<videoId>` id. They play through a hidden
+     IFrame using YouTube's postMessage API: no API script, no key, and the
+     frame is parked off-screen so the UI never has to host it. */
+  let ytFrame = null;
+  let ytHost = null;
+  let ytPlayerId = '';
+  let ytVideoId = '';
+  let ytState = -1;
+  let ytTime = 0;
+  let ytDuration = 0;
+  let ytVolume = 80;
+
+  function ytActive() {
+    return !!(currentTrack && String(currentTrack.id).startsWith('yt:') && ytFrame);
+  }
+
+  function ensureYT() {
+    if (ytFrame && document.body.contains(ytFrame)) return ytFrame;
+    ytHost = document.createElement('div');
+    ytHost.id = 'afYtHost';
+    ytHost.setAttribute('aria-hidden', 'true');
+    ytHost.style.cssText = 'position:fixed;left:-9999px;top:0;width:1px;height:1px;overflow:hidden;opacity:0;pointer-events:none';
+    ytFrame = document.createElement('iframe');
+    ytFrame.id = 'afYtFrame';
+    ytFrame.title = 'Audio engine';
+    ytFrame.allow = 'autoplay; encrypted-media; picture-in-picture';
+    ytFrame.setAttribute('referrerpolicy', 'no-referrer');
+    ytHost.appendChild(ytFrame);
+    document.body.appendChild(ytHost);
+    ytPlayerId = 'afyt' + Math.random().toString(36).slice(2, 8);
+    return ytFrame;
+  }
+
+  function ytPost(payload) {
+    try { ytFrame?.contentWindow?.postMessage(JSON.stringify(payload), '*'); } catch {}
+  }
+  function ytCommand(func, args = []) {
+    ytPost({ event: 'command', func, args, id: ytPlayerId, channel: 'widget' });
+  }
+  function ytHandshake() {
+    ytPost({ event: 'listening', id: ytPlayerId, channel: 'widget' });
+  }
+
+  function ytLoad(videoId) {
+    ensureYT();
+    ytVideoId = videoId;
+    ytState = -1;
+    ytTime = 0;
+    ytDuration = 0;
+    const origin = encodeURIComponent(location.origin || 'https://localhost');
+    ytFrame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&enablejsapi=1&playsinline=1&rel=0&origin=${origin}`;
+    // The frame drops its first listening event while it warms up, so the
+    // handshake repeats for a few seconds instead of once.
+    let tries = 0;
+    const beat = setInterval(() => {
+      ytHandshake();
+      ytCommand('setVolume', [ytVolume]);
+      tries += 1;
+      if (tries > 24) clearInterval(beat);
+    }, 250);
+    setTimeout(() => ytCommand('playVideo'), 900);
+    setTimeout(() => ytCommand('playVideo'), 2400);
+  }
+
+  function applyYtState(state) {
+    if (!Number.isFinite(state)) return;
+    ytState = state;
+    document.body.classList.toggle('music-playing', state === 1);
+    if (state === 0) {
+      if (repeatMode === 'one') { ytCommand('seekTo', [0, true]); ytCommand('playVideo'); return; }
+      nextTrack(1);
+      return;
+    }
+    if (state === 1 || state === 2 || state === 5) updatePlayer();
+  }
+
+  window.addEventListener('message', (event) => {
+    if (!ytFrame) return;
+    const raw = typeof event.data === 'string' ? event.data : '';
+    if (!raw || (raw.indexOf('infoDelivery') === -1 && raw.indexOf('onReady') === -1 && raw.indexOf('onStateChange') === -1)) return;
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || !msg.event) return;
+    if (msg.event === 'onReady') {
+      ytHandshake();
+      ytCommand('setVolume', [ytVolume]);
+      return;
+    }
+    if (msg.event === 'onStateChange') {
+      applyYtState(Number(msg.info));
+      return;
+    }
+    if (msg.event === 'infoDelivery' && msg.info) {
+      if (typeof msg.info.currentTime === 'number') ytTime = msg.info.currentTime;
+      if (typeof msg.info.duration === 'number' && msg.info.duration) ytDuration = msg.info.duration;
+      if (typeof msg.info.playerState === 'number') applyYtState(msg.info.playerState);
+      if (ytActive()) paintTime();
+    }
+  });
+
+  function engineTime() {
+    return ytActive() ? ytTime : (audio.currentTime || 0);
+  }
+  function engineDuration() {
+    return ytActive() ? (ytDuration || currentTrack?.duration || 0) : (audio.duration || currentTrack?.duration || 0);
+  }
+  function enginePlaying() {
+    return ytActive() ? ytState === 1 || ytState === 3 : !audio.paused;
+  }
+  function paintTime() {
+    const seek = document.getElementById('miniSeek');
+    const elapsed = document.getElementById('miniElapsed');
+    const total = document.getElementById('miniDuration');
+    const t = engineTime();
+    const d = engineDuration();
+    if (seek && d) seek.value = String(Math.round(t / d * 1000));
+    if (elapsed) elapsed.textContent = U.fmtTime(t);
+    if (total) total.textContent = U.fmtTime(d);
+  }
+
   function updatePlayer() {
     const player=document.getElementById('miniPlayer'); if(!player)return;
     if(!currentTrack){player.hidden=true;return;}
@@ -581,7 +791,7 @@
     if(art){art.innerHTML=currentTrack.artwork?`<img src="${esc(currentTrack.artwork)}" alt="" referrerpolicy="no-referrer">`:'♫';}
     document.getElementById('miniTitle').textContent=currentTrack.title;
     document.getElementById('miniArtist').textContent=currentTrack.artist;
-    document.getElementById('miniPlay').textContent=audio.paused?'▶':'Ⅱ';
+    document.getElementById('miniPlay').textContent=enginePlaying()?'Ⅱ':'▶';
     const fav=document.getElementById('miniFavorite'); if(fav){fav.textContent=isFavorite(currentTrack.id)?'♥':'♡';fav.classList.toggle('is-active',isFavorite(currentTrack.id));}
     const repeat=document.getElementById('miniRepeat'); if(repeat){repeat.textContent=repeatMode==='one'?'↻¹':repeatMode==='all'?'↻':'↻̸';repeat.title=`Repeat ${repeatMode}`;}
     const shuffle=document.getElementById('miniShuffle'); if(shuffle){shuffle.classList.toggle('is-active',shuffleMode);}
@@ -600,11 +810,20 @@
     const history=getHistory().filter(t=>String(t.id)!==String(track.id));
     AFStore.set('musicHistory',[track,...history].slice(0,30));
     audio.pause();
-    audio.src=track.stream;
-    audio.load(); updatePlayer();
+    audio.removeAttribute('src');
+    audio.load();
+    if (String(track.id).startsWith('yt:')) {
+      ytLoad(String(track.id).slice(3));
+      document.body.classList.add('music-playing');
+      updatePlayer();
+    } else {
+      if (ytFrame) ytCommand('pauseVideo');
+      audio.src=track.stream;
+      audio.load(); updatePlayer();
+      try { await audio.play(); updatePlayer(); }
+      catch (error) { AF.toast('Playback could not start. Press play again or choose another track.','error'); }
+    }
     if (lyricsOpen) loadLyrics(track);
-    try { await audio.play(); updatePlayer(); }
-    catch (error) { AF.toast('Playback could not start. Press play again or choose another track.','error'); }
     document.querySelectorAll('.afm-track-row,.afm-track-card').forEach(el=>el.classList.toggle('is-playing',!!el.querySelector(`[data-id="${CSS.escape(String(track.id))}"]`)));
   }
   function nextTrack(direction=1) {
@@ -615,12 +834,7 @@
     const next=queue[queueIndex]; if(next)playTrackById(next.id);
   }
   function timeUpdate() {
-    const seek=document.getElementById('miniSeek');
-    const elapsed=document.getElementById('miniElapsed');
-    const total=document.getElementById('miniDuration');
-    if(seek && audio.duration) seek.value=String(Math.round(audio.currentTime/audio.duration*1000));
-    if(elapsed) elapsed.textContent=U.fmtTime(audio.currentTime||0);
-    if(total) total.textContent=U.fmtTime(audio.duration||currentTrack?.duration||0);
+    paintTime();
     syncLyrics();
   }
   function renderInfo() {
@@ -639,7 +853,15 @@
     if(action==='music-refresh') { if(view==='browse')loadBrowse(); else if(view==='search')searchMusic(searchText); else if(view==='artist'&&artistMode)openArtist(artistMode.id,artistMode.name); else openCollection(view,currentPlaylistId); return; }
     if(action==='music-prev') { nextTrack(-1); return; }
     if(action==='music-next') { nextTrack(1); return; }
-    if(action==='music-toggle') { if(!currentTrack)return; if(audio.paused)audio.play().catch(()=>AF.toast('Press play again to start audio.','error')); else audio.pause(); return; }
+    if(action==='music-toggle') {
+      if(!currentTrack)return;
+      if(ytActive()){
+        if(ytState===1){ ytCommand('pauseVideo'); applyYtState(2); }
+        else { ytCommand('playVideo'); applyYtState(1); }
+        updatePlayer(); return;
+      }
+      if(audio.paused)audio.play().catch(()=>AF.toast('Press play again to start audio.','error')); else audio.pause(); return;
+    }
     if(action==='music-repeat') { repeatMode=repeatMode==='off'?'all':repeatMode==='all'?'one':'off'; updatePlayer(); return; }
     if(action==='music-shuffle') { shuffleMode=!shuffleMode; updatePlayer(); return; }
     if(action==='music-favorite-current') { if(currentTrack)toggleFavorite(currentTrack.id); return; }
@@ -654,11 +876,17 @@
     if(action==='music-lyrics-retry') { if(currentTrack) loadLyrics(currentTrack,true); return; }
     if(action==='music-lyric-seek') {
       const stamp=el?.dataset.time;
-      if(stamp!==undefined&&stamp!=='') { const seconds=Number(stamp); if(Number.isFinite(seconds)) audio.currentTime=seconds; }
+      if(stamp!==undefined&&stamp!=='') {
+        const seconds=Number(stamp);
+        if(Number.isFinite(seconds)) {
+          if(ytActive()){ ytTime=seconds; ytCommand('seekTo',[seconds,true]); paintTime(); }
+          else audio.currentTime=seconds;
+        }
+      }
       return;
     }
     if(action==='music-open-music') { AF.navigate('music'); return; }
-    if(action==='music-stop') { audio.pause(); audio.removeAttribute('src'); audio.load(); currentTrack=null; updatePlayer(); return; }
+    if(action==='music-stop') { audio.pause(); audio.removeAttribute('src'); audio.load(); if(ytFrame)ytCommand('pauseVideo'); ytState=-1; document.body.classList.remove('music-playing'); currentTrack=null; updatePlayer(); return; }
   }
   function bindPage() {
     const form=document.getElementById('musicSearchForm');
@@ -676,8 +904,8 @@
   function bindGlobal() {
     audio.addEventListener('timeupdate',timeUpdate);
     audio.addEventListener('loadedmetadata',timeUpdate);
-    audio.addEventListener('play',updatePlayer);
-    audio.addEventListener('pause',updatePlayer);
+    audio.addEventListener('play',()=>{if(!ytActive())document.body.classList.add('music-playing');updatePlayer();});
+    audio.addEventListener('pause',()=>{if(!ytActive())document.body.classList.remove('music-playing');updatePlayer();});
     audio.addEventListener('ended',()=>{
       if(repeatMode==='one'){audio.currentTime=0;audio.play().catch(()=>{});return;}
       if(queueIndex<queue.length-1)nextTrack(1);
@@ -685,13 +913,27 @@
       else {updatePlayer();}
     });
     audio.addEventListener('error',()=>{if(currentTrack)AF.toast('This track could not be streamed. Try another result.','error');});
-    document.getElementById('miniSeek')?.addEventListener('input',e=>{if(audio.duration)audio.currentTime=(Number(e.target.value)/1000)*audio.duration;});
-    document.getElementById('miniVolume')?.addEventListener('input',e=>{audio.volume=Number(e.target.value)/100;AFStore.set('musicVolume',audio.volume);});
+    document.getElementById('miniSeek')?.addEventListener('input',e=>{
+      const ratio=Number(e.target.value)/1000;
+      if(ytActive()){ const seconds=ratio*(ytDuration||currentTrack?.duration||0); ytTime=seconds; ytCommand('seekTo',[seconds,true]); paintTime(); return; }
+      if(audio.duration)audio.currentTime=ratio*audio.duration;
+    });
+    document.getElementById('miniVolume')?.addEventListener('input',e=>{
+      audio.volume=Number(e.target.value)/100;
+      AFStore.set('musicVolume',audio.volume);
+      ytVolume=Math.round(audio.volume*100);
+      if(ytFrame)ytCommand('setVolume',[ytVolume]);
+    });
     audio.volume=Number(AFStore.get('musicVolume',0.8));
+    ytVolume=Math.round(audio.volume*100);
     const volume=document.getElementById('miniVolume'); if(volume)volume.value=String(audio.volume*100);
     const last=AFStore.get('lastMusicTrack',null);
     if(last&&typeof last==='object'&&last.id){currentTrack=normalize(last);remember(currentTrack);updatePlayer();}
   }
   bindGlobal();
-  window.AFMusic={renderPage,bindPage,onAction,playTrack:playTrackById,search:searchMusic};
+  window.AFMusic={renderPage,bindPage,onAction,playTrack:playTrackById,search:searchMusic,pauseAll(){
+    try{audio.pause();}catch{}
+    if(ytFrame)ytCommand('pauseVideo');
+    document.body.classList.remove('music-playing');
+  }};
 })();
