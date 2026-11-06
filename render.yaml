@@ -1,0 +1,18 @@
+# Render blueprint — one public port, so Rammerhead is off and the two
+# service-worker lanes (Scramjet, Ultraviolet) carry /go/. WebSocket upgrades
+# work on Render services, which is all the Wisp transport needs.
+services:
+  - type: web
+    name: af-game-hub
+    runtime: node
+    plan: free
+    buildCommand: npm ci && node scripts/build.mjs
+    startCommand: node server/index.mjs
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: AFHUB_RH
+        value: "0"
+      - key: API_UPSTREAM
+        sync: false

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 660 300" role="img" aria-labelledby="t d">
+<title id="t">COOLMATH</title><desc id="d">Original abstract AF Game Hub cover artwork for puzzles & logic.</desc>
+<defs><linearGradient id="bg" x1="0" x2="1" y1="0" y2="1"><stop stop-color="#1c3b30"/><stop offset="1" stop-color="#10131b"/></linearGradient><radialGradient id="glow"><stop stop-color="#65d9a1" stop-opacity=".3"/><stop offset="1" stop-color="#65d9a1" stop-opacity="0"/></radialGradient></defs>
+<rect width="660" height="300" rx="26" fill="url(#bg)"/><circle cx="335" cy="150" r="195" fill="url(#glow)"/><g fill="#65d9a1"><rect x="235" y="73" width="76" height="76" rx="15"/><rect x="323" y="73" width="76" height="76" rx="15" opacity=".7"/><rect x="235" y="161" width="76" height="76" rx="15" opacity=".55"/><rect x="323" y="161" width="76" height="76" rx="15" opacity=".85"/></g>
+<text x="30" y="264" fill="#fff" font-family="Arial,sans-serif" font-size="28" font-weight="800" letter-spacing="2">COOLMATH</text><text x="31" y="286" fill="#b9c0cc" font-family="Arial,sans-serif" font-size="10" letter-spacing="2">PUZZLES & LOGIC</text>
+<path d="M30 22h72" stroke="#65d9a1" stroke-width="5" stroke-linecap="round"/><text x="122" y="27" fill="#9ea6b6" font-family="Arial,sans-serif" font-size="9" letter-spacing="2">AF GAME HUB ORIGINAL</text></svg>

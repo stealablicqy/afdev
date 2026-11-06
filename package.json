@@ -1,0 +1,33 @@
+{
+  "name": "af-game-hub",
+  "version": "5.0.0",
+  "private": true,
+  "type": "module",
+  "description": "AF Game Hub — games, music, in-app browser, and a real proxy backend.",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node server/index.mjs",
+    "dev": "node scripts/build.mjs && node server/index.mjs",
+    "deploy": "wrangler deploy",
+    "deploy:dry": "wrangler deploy --dry-run --outdir .wrangler/dry",
+    "pages": "node scripts/pages.mjs",
+    "deploy:pages": "node scripts/pages.mjs && wrangler pages deploy dist --project-name af-hub"
+  },
+  "dependencies": {
+    "@mercuryworkshop/bare-mux": "^2.1.9",
+    "@mercuryworkshop/epoxy-tls": "^2.1.20-1",
+    "@mercuryworkshop/epoxy-transport": "^3.0.2",
+    "@mercuryworkshop/scramjet": "^1.1.0",
+    "@mercuryworkshop/wisp-js": "^0.5.2",
+    "@titaniumnetwork-dev/ultraviolet": "^3.2.10",
+    "rammerhead": "^1.2.64",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "wrangler": "^4.158.0"
+  }
+}
