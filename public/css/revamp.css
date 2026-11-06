@@ -1,0 +1,543 @@
+/* ─────────────────────────────────────────────────────────────
+   AF Game Hub — revamp layer
+   Loaded after app.css / desync-inspired.css, so everything here
+   is an override. Animated backdrop, glass surfaces, interface
+   shape, falcon branding, the game library and the fullscreen
+   player. Nothing in here carries structure the app depends on.
+   ───────────────────────────────────────────────────────────── */
+
+/* ── animated backdrop ─────────────────────────────────────── */
+
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  inset: -30vmax;
+  z-index: 0;
+  pointer-events: none;
+  will-change: transform;
+}
+
+body::before {
+  background:
+    radial-gradient(38vmax 38vmax at 18% 22%, rgba(239, 51, 64, .22), transparent 62%),
+    radial-gradient(34vmax 34vmax at 82% 18%, rgba(124, 101, 237, .20), transparent 64%),
+    radial-gradient(42vmax 42vmax at 68% 84%, rgba(20, 169, 135, .18), transparent 66%),
+    radial-gradient(30vmax 30vmax at 24% 86%, rgba(59, 137, 234, .16), transparent 64%);
+  filter: blur(18px) saturate(118%);
+  animation: afh-aurora 26s ease-in-out infinite alternate;
+}
+
+body::after {
+  background-image:
+    linear-gradient(rgba(255, 255, 255, .028) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .028) 1px, transparent 1px);
+  background-size: 64px 64px;
+  transform: perspective(760px) rotateX(58deg) translateY(30vh) scale(1.7);
+  transform-origin: 50% 100%;
+  opacity: .55;
+  animation: afh-grid 18s linear infinite;
+}
+
+@keyframes afh-aurora {
+  0%   { transform: translate3d(-3%, -2%, 0) scale(1.04) rotate(0deg); }
+  50%  { transform: translate3d(2%, 1%, 0) scale(1.10) rotate(3deg); }
+  100% { transform: translate3d(3%, -1%, 0) scale(1.05) rotate(-2deg); }
+}
+
+@keyframes afh-grid {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 0 64px, 64px 0; }
+}
+
+body.no-background::before,
+body.no-background::after { display: none; }
+
+body.reduced-motion::before,
+body.reduced-motion::after { animation: none; }
+
+.app-shell,
+.main-column,
+.view-root,
+.toast-stack {
+  position: relative;
+  z-index: 1;
+}
+
+/* ── falcon branding ───────────────────────────────────────── */
+
+.brand-falcon,
+.home-brand-falcon,
+.privacy-cover-mark {
+  display: block;
+  border-radius: 14px;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 22px rgba(239, 51, 64, .32));
+  transition: transform .45s cubic-bezier(.2, .8, .25, 1), filter .45s ease;
+}
+
+.brand:hover .brand-falcon {
+  transform: rotate(-6deg) scale(1.06);
+  filter: drop-shadow(0 10px 28px rgba(239, 51, 64, .5));
+}
+
+.home-brand-falcon {
+  width: 112px;
+  height: 112px;
+  margin: 0 auto 16px;
+  border-radius: 26px;
+  animation: afh-hover 7s ease-in-out infinite;
+}
+
+@keyframes afh-hover {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50%      { transform: translateY(-8px) rotate(2deg); }
+}
+
+.profile-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: inherit;
+}
+
+.privacy-cover-mark {
+  margin: 0 auto 18px;
+  border-radius: 18px;
+}
+
+/* ── glass surfaces ────────────────────────────────────────── */
+
+.panel,
+.settings-card,
+.library-card,
+.web-card,
+.home-recent-card,
+.account-auth-card,
+.ai-panel,
+.ai-config,
+.home-omnibox,
+.global-search,
+.topbar,
+.sidebar,
+.dialog-layer > * {
+  backdrop-filter: blur(18px) saturate(130%);
+  -webkit-backdrop-filter: blur(18px) saturate(130%);
+}
+
+.panel,
+.settings-card,
+.library-card,
+.ai-panel,
+.ai-config,
+.account-auth-card {
+  background: linear-gradient(160deg, rgba(23, 26, 34, .82), rgba(15, 17, 22, .78));
+  border: 1px solid var(--border-hi);
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .34), inset 0 1px 0 rgba(255, 255, 255, .05);
+  transition: transform .3s cubic-bezier(.2, .8, .25, 1), border-color .3s ease, box-shadow .3s ease;
+}
+
+.panel:hover,
+.settings-card:hover {
+  border-color: rgba(239, 51, 64, .3);
+  box-shadow: 0 22px 60px rgba(0, 0, 0, .42), inset 0 1px 0 rgba(255, 255, 255, .07);
+}
+
+.sidebar {
+  background: linear-gradient(180deg, rgba(14, 16, 21, .92), rgba(11, 12, 16, .96));
+  border-right: 1px solid var(--border-hi);
+}
+
+.topbar {
+  background: rgba(11, 12, 16, .72);
+  border-bottom: 1px solid var(--border-hi);
+}
+
+/* animated accent underline on the active nav item */
+.nav-link {
+  position: relative;
+  overflow: hidden;
+}
+
+.nav-link::after {
+  content: "";
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 4px;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform .34s cubic-bezier(.2, .8, .25, 1);
+}
+
+.nav-link.active::after,
+.nav-link:hover::after { transform: scaleX(1); }
+
+/* ── interface shape (consumed here; app sets html[data-shape]) ── */
+
+html[data-shape="rounded"] {
+  --radius: 18px;
+}
+
+html[data-shape="square"] {
+  --radius: 3px;
+}
+
+html[data-shape="pill"] {
+  --radius: 999px;
+}
+
+/* square: corners go flat everywhere the radius variable is honoured */
+html[data-shape="square"] .panel,
+html[data-shape="square"] .settings-card,
+html[data-shape="square"] .library-card,
+html[data-shape="square"] .web-card,
+html[data-shape="square"] .home-recent-card,
+html[data-shape="square"] .ai-panel,
+html[data-shape="square"] .ai-config,
+html[data-shape="square"] .account-auth-card,
+html[data-shape="square"] .dialog-layer > *,
+html[data-shape="square"] .home-omnibox,
+html[data-shape="square"] .library-art,
+html[data-shape="square"] .brand-mark,
+html[data-shape="square"] .home-brand-falcon {
+  border-radius: 3px !important;
+}
+
+html[data-shape="square"] .btn,
+html[data-shape="square"] .chip,
+html[data-shape="square"] .swatch,
+html[data-shape="square"] .input,
+html[data-shape="square"] .select,
+html[data-shape="square"] .textarea,
+html[data-shape="square"] .icon-button {
+  border-radius: 3px !important;
+}
+
+/* pill: everything soft */
+html[data-shape="pill"] .btn,
+html[data-shape="pill"] .chip,
+html[data-shape="pill"] .input,
+html[data-shape="pill"] .select,
+html[data-shape="pill"] .textarea,
+html[data-shape="pill"] .home-omnibox,
+html[data-shape="pill"] .global-search,
+html[data-shape="pill"] .icon-button,
+html[data-shape="pill"] .nav-link,
+html[data-shape="pill"] .library-tag {
+  border-radius: 999px !important;
+}
+
+html[data-shape="pill"] .panel,
+html[data-shape="pill"] .settings-card,
+html[data-shape="pill"] .library-card,
+html[data-shape="pill"] .ai-panel,
+html[data-shape="pill"] .ai-config,
+html[data-shape="pill"] .account-auth-card,
+html[data-shape="pill"] .dialog-layer > * {
+  border-radius: 26px !important;
+}
+
+/* ── game library ──────────────────────────────────────────── */
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 16px;
+}
+
+.library-card {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  animation: afh-rise .42s cubic-bezier(.2, .8, .25, 1) both;
+}
+
+@keyframes afh-rise {
+  from { opacity: 0; transform: translateY(14px) scale(.985); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.library-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(239, 51, 64, .42);
+  box-shadow: 0 24px 54px rgba(0, 0, 0, .46), 0 0 0 1px rgba(239, 51, 64, .18);
+}
+
+.library-art {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  background: linear-gradient(145deg, var(--panel-2), var(--panel-3));
+}
+
+.library-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform .5s cubic-bezier(.2, .8, .25, 1), filter .5s ease;
+}
+
+.library-card:hover .library-art img {
+  transform: scale(1.07);
+  filter: saturate(118%);
+}
+
+.library-art::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 46%;
+  background: linear-gradient(to top, rgba(11, 12, 16, .82), transparent);
+  pointer-events: none;
+}
+
+.library-tag {
+  position: absolute;
+  top: 9px;
+  left: 9px;
+  z-index: 2;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(11, 12, 16, .74);
+  border: 1px solid var(--border-hi);
+  font: 600 10px/1.4 system-ui, sans-serif;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  backdrop-filter: blur(8px);
+}
+
+.library-card-body {
+  padding: 12px 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex: 1;
+}
+
+.library-card-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.library-card-title strong {
+  font: 700 14px/1.3 "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -.01em;
+}
+
+.library-card-body p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  flex: 1;
+}
+
+.library-card .card-actions { margin-top: 4px; }
+
+.fav-toggle {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--border-hi);
+  background: rgba(255, 255, 255, .04);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .2s, background .2s, transform .2s;
+}
+
+.fav-toggle:hover { transform: scale(1.1); color: #ff7d86; }
+
+.fav-toggle.is-fav {
+  color: #ff5963;
+  background: rgba(239, 51, 64, .16);
+  border-color: rgba(239, 51, 64, .4);
+}
+
+.catalog-empty {
+  grid-column: 1 / -1;
+  padding: 44px 20px;
+  text-align: center;
+  color: var(--muted);
+  border: 1px dashed var(--border-hi);
+  border-radius: var(--radius);
+}
+
+.catalog-more {
+  display: flex;
+  justify-content: center;
+  padding: 26px 0 8px;
+}
+
+/* ── fullscreen game player ────────────────────────────────── */
+
+.game-player {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: flex;
+  flex-direction: column;
+  background: #06070a;
+  animation: afh-fade .24s ease both;
+}
+
+@keyframes afh-fade { from { opacity: 0; } to { opacity: 1; } }
+
+.game-player-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: rgba(14, 16, 21, .92);
+  border-bottom: 1px solid var(--border-hi);
+  backdrop-filter: blur(16px);
+}
+
+.game-player-meta { display: flex; flex-direction: column; line-height: 1.2; }
+.game-player-meta strong { font: 700 14px/1.3 "Space Grotesk", system-ui, sans-serif; }
+.game-player-meta small { color: var(--muted); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; }
+
+.game-player-actions { margin-left: auto; display: flex; gap: 8px; }
+
+.game-player-frame {
+  flex: 1;
+  position: relative;
+  background: #000;
+}
+
+.game-player-frame iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+}
+
+body.player-open { overflow: hidden; }
+
+/* ── home ──────────────────────────────────────────────────── */
+
+.desync-home {
+  position: relative;
+  padding-top: 8px;
+}
+
+.home-brand-lockup { text-align: center; }
+
+.home-brand-word {
+  font: 800 clamp(26px, 4vw, 40px)/1.05 "Space Grotesk", system-ui, sans-serif;
+  letter-spacing: -.03em;
+}
+
+.home-brand-word span {
+  background: linear-gradient(100deg, var(--accent), #ff7d86 45%, #b39bff);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.home-omnibox {
+  max-width: 660px;
+  margin: 26px auto 0;
+  border: 1px solid var(--border-hi);
+  background: rgba(20, 23, 30, .78);
+  border-radius: var(--radius);
+  transition: border-color .25s ease, box-shadow .25s ease;
+}
+
+.home-omnibox:focus-within {
+  border-color: rgba(239, 51, 64, .5);
+  box-shadow: 0 0 0 4px rgba(239, 51, 64, .12), 0 18px 44px rgba(0, 0, 0, .4);
+}
+
+.home-quick-link {
+  transition: transform .24s cubic-bezier(.2, .8, .25, 1), background .24s ease, border-color .24s ease;
+}
+
+.home-quick-link:hover {
+  transform: translateY(-3px);
+  border-color: rgba(239, 51, 64, .4);
+  background: rgba(239, 51, 64, .1);
+}
+
+.home-recent-card {
+  transition: transform .26s cubic-bezier(.2, .8, .25, 1), border-color .26s ease;
+}
+
+.home-recent-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(239, 51, 64, .4);
+}
+
+/* ── AI assistant ──────────────────────────────────────────── */
+
+.ai-message {
+  animation: afh-rise .3s cubic-bezier(.2, .8, .25, 1) both;
+}
+
+.ai-message.assistant {
+  border-left: 2px solid rgba(239, 51, 64, .5);
+}
+
+.ai-service-card {
+  border-radius: var(--radius);
+}
+
+.ai-service-state {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── settings ──────────────────────────────────────────────── */
+
+.settings-section-label {
+  letter-spacing: .14em;
+}
+
+.swatch {
+  transition: transform .2s ease, box-shadow .2s ease;
+}
+
+.swatch:hover { transform: scale(1.12); }
+
+.swatch.active {
+  box-shadow: 0 0 0 3px var(--bg), 0 0 0 5px currentColor;
+}
+
+/* ── motion preferences ────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  body::before,
+  body::after,
+  .home-brand-falcon,
+  .library-card,
+  .ai-message {
+    animation: none !important;
+  }
+}
+
+/* ── small screens ─────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .card-grid {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+    gap: 12px;
+  }
+  .home-brand-falcon { width: 88px; height: 88px; }
+  .game-player-bar { padding: 8px 10px; }
+}
