@@ -6,17 +6,17 @@
   <meta name="theme-color" content="#0b0c10">
   <meta name="referrer" content="no-referrer">
   <title>AF Game Hub — Web</title>
-  <link rel="icon" href="/assets/af-mark.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/go/go.css">
-  <script src="/js/cloak.js"></script>
-  <script src="/uv/uv.bundle.js"></script>
-  <script src="/uv/uv.config.js"></script>
+  <link rel="icon" href="../assets/falcon.png" type="image/png">
+  <link rel="stylesheet" href="./go.css">
+  <script src="../js/cloak.js"></script>
+  <script src="../uv/uv.bundle.js"></script>
+  <script src="../uv/uv.config.js"></script>
 </head>
 <body>
   <div class="chrome">
     <div class="chrome-top">
-      <a class="chrome-home" href="/" title="Back to AF Game Hub">
-        <span class="chrome-mark">AF</span>
+      <a class="chrome-home" href="../app" title="Back to AF Game Hub">
+        <img class="chrome-mark" src="../assets/falcon.png" alt="">
         <span class="chrome-word">Game Hub</span>
       </a>
 
@@ -82,11 +82,11 @@
 
       <form class="omnibox" id="omnibox">
         <svg class="omnibox-lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
-        <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="Search, URL, or !sj / !uv / !rh to force an engine">
+        <input id="address" type="text" spellcheck="false" autocomplete="off" placeholder="Search, URL, or prefix !sj / !uv to force an engine">
         <button type="submit" class="go-btn">GO</button>
       </form>
 
-      <div class="engine-note" id="engineNote">scramjet</div>
+      <div class="engine-note" id="engineNote">ultraviolet</div>
     </div>
 
     <div class="loadbar" id="loadbar"><span></span></div>
@@ -108,8 +108,8 @@
 
       <p class="home-foot">
         <span id="homeEngine">Scramjet</span> engine ·
-        prefix <code>!sj</code> <code>!uv</code> <code>!rh</code> to force one ·
-        <a href="/">back to hub</a>
+        prefix <code>!sj</code> <code>!uv</code> to force one ·
+        <a href="../app">back to hub</a>
       </p>
     </section>
   </main>
@@ -131,6 +131,6 @@
 
   <div class="toasts" id="toasts" aria-live="polite"></div>
 
-  <script type="module" src="/go/go.js"></script>
+  <script type="module" src="./go.js"></script>
 </body>
 </html>

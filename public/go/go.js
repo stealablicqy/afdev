@@ -1,18 +1,41 @@
-import { BareMuxConnection } from "/baremux/baremux.mjs";
+import { BareMuxConnection } from "../baremux/baremux.mjs";
 
-const UV_PREFIX = "/uv/service/";
-const SJ_PREFIX = "/scramjet/sj/";
+// The hub is served from a CDN directory (and from the repo root in dev), so
+// every asset path is derived from this module's own URL. A root-absolute
+// "/uv/sw.js" only resolves when the app owns the origin; here it 404s.
+const ROOT = new URL("../", import.meta.url);
+const BASE_PATH = ROOT.pathname;
+const asset = (relative) => new URL(relative, ROOT).href;
+
+const UV_PREFIX = `${BASE_PATH}uv/service/`;
+const SJ_PREFIX = `${BASE_PATH}scramjet/sj/`;
 const SJ_FILES = {
-	wasm: "/scramjet/scramjet.wasm.wasm",
-	all: "/scramjet/scramjet.all.js",
-	sync: "/scramjet/scramjet.sync.js",
+	wasm: asset("scramjet/scramjet.wasm.wasm"),
+	all: asset("scramjet/scramjet.all.js"),
+	sync: asset("scramjet/scramjet.sync.js"),
 };
 
-const WISP_URL = `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/wisp/`;
+// A static CDN cannot terminate a proxy hop, so the Wisp relay is external.
+// Override per-device from Settings or localStorage when this host is filtered.
+const WISP_KEY = "af.go.wisp";
+const WISP_DEFAULT = "wss://wisp.mercurywork.shop/";
+
+function readWispUrl() {
+	let stored = "";
+	try {
+		stored = localStorage.getItem(WISP_KEY) || "";
+	} catch {
+		// private mode / blocked storage: fall back to the default relay
+	}
+	return /^wss?:\/\//i.test(stored) ? stored : WISP_DEFAULT;
+}
+
+let WISP_URL = readWispUrl();
 
 // Bump when the bare-mux worker changes: the browser caches SharedWorker scripts
 // by URL, and a stale one breaks every transport with an importScripts error.
-const BAREMUX_WORKER = "/baremux/worker.js?v=5";
+const BAREMUX_WORKER = `${asset("baremux/worker.js")}?v=5`;
+const TRANSPORT_URL = asset("transport/epoxy.mjs");
 
 // How long a frame gets to announce itself before the ladder moves on. Schools
 // drop blocked requests silently, so "no load event" is the common failure, not
@@ -64,7 +87,26 @@ const PROXY_SHELL_TITLES = ["scramjet", "ultraviolet", "rammerhead", "uv"];
 const MEMORY_KEY = "af.go.memory.v1";
 const RECENT_KEY = "af.go.recent.v1";
 
-const ENGINE_ORDER = ["scramjet", "ultraviolet", "rammerhead"];
+// Rammerhead is a server-side proxy: it needs a session minted by a backend it
+// shares an origin with. That backend is server/index.mjs, discovered through
+// /api/engines when the hub is hosted on it. A remote Rammerhead server can be
+// set per device from Settings, which is the only way the lane exists on a
+// static CDN host. The lane hides itself when neither answers.
+const RH_KEY = "af.go.rh";
+
+function readRhBase() {
+	let stored = "";
+	try {
+		stored = localStorage.getItem(RH_KEY) || "";
+	} catch {
+		// storage blocked: no remote lane, same-origin discovery still applies
+	}
+	return /^https?:\/\//i.test(stored) ? stored.replace(/\/+$/, "") : "";
+}
+
+let RH_BASE = readRhBase();
+
+const ENGINE_ORDER = ["ultraviolet", "rammerhead", "scramjet"];
 const ENGINE_LABEL = {
 	scramjet: "Scramjet",
 	ultraviolet: "Ultraviolet",
@@ -139,7 +181,7 @@ const dom = {
 const state = {
 	tabs: [],
 	active: -1,
-	engine: "scramjet",
+	engine: "ultraviolet",
 	controller: null,
 	connection: null,
 	transport: "",
@@ -317,7 +359,7 @@ function forgetMemory() {
 /* ---------------------------------------------------------------- engines */
 
 function isEngineUsable(engine) {
-	if (engine === "rammerhead") return Boolean(state.rammerhead?.origin);
+	if (engine === "rammerhead") return Boolean(state.rammerhead?.origin || RH_BASE);
 	return Boolean(state.engines[engine]);
 }
 
@@ -336,7 +378,7 @@ function orderedEngines() {
 }
 
 function firstUsableEngine() {
-	return orderedEngines()[0] || "scramjet";
+	return orderedEngines()[0] || "ultraviolet";
 }
 
 // Engine choice is remembered per host: a site that only renders through one
@@ -365,21 +407,50 @@ function proxyUrl(tab, url) {
 		return UV_PREFIX + globalThis.Ultraviolet.codec.xor.encode(url);
 	}
 	if (tab.engine === "rammerhead") {
-		const session = tab.rhSession;
-		if (!session) return null;
-		return `${session.origin}/${session.id}/${url}`;
+		// A remote server mints its own session from the bare URL form and
+		// redirects into it, so no cross-origin session call is needed.
+		const base = tab.rhSession?.origin || RH_BASE;
+		if (!base) return null;
+		if (tab.rhSession?.id) return `${base}/${tab.rhSession.id}/${url}`;
+		return `${base}/${url}`;
 	}
 	return null;
 }
 
+// Same-origin Rammerhead (server/index.mjs) hands out a session id; a remote
+// server does not need one, because it redirects into a session on first load.
 async function ensureRammerheadSession(tab) {
-	if (tab.rhSession) return tab.rhSession;
-	const response = await fetch("/api/rh/session", { method: "POST", cache: "no-store" });
+	if (tab.rhSession || RH_BASE) {
+		if (!tab.rhSession && RH_BASE) tab.rhSession = { origin: RH_BASE, id: "" };
+		return tab.rhSession;
+	}
+	const response = await fetch(new URL("api/rh/session", ROOT).href, {
+		method: "POST",
+		cache: "no-store",
+	});
 	if (!response.ok) throw new Error(`session ${response.status}`);
 	const data = await response.json();
 	if (!data?.id || !data?.origin) throw new Error("session payload incomplete");
 	tab.rhSession = { id: data.id, origin: data.origin };
 	return tab.rhSession;
+}
+
+// The hub server advertises which lanes it can actually run. Absent, the two
+// service-worker engines are still available, so this never blocks boot.
+async function discoverEngines() {
+	RH_BASE = readRhBase();
+	try {
+		const response = await fetch(new URL("api/engines", ROOT).href, { cache: "no-store" });
+		if (!response.ok) return;
+		const data = await response.json();
+		const rammerhead = data?.engines?.rammerhead;
+		if (rammerhead?.origin) {
+			state.rammerhead = { origin: String(rammerhead.origin).replace(/\/+$/, "") };
+			mark("rammerhead:available");
+		}
+	} catch (error) {
+		console.debug("engine discovery skipped:", error?.message || error);
+	}
 }
 
 /* ---------------------------------------------------------------- probes */
@@ -457,30 +528,26 @@ async function probeEngine(engine) {
 		return { state: "bad", note: "not registered", ms: 0, at: Date.now() };
 	}
 
-	if (engine === "rammerhead") {
-		try {
-			const response = await fetch("/api/rh/session", { method: "POST", cache: "no-store" });
-			if (!response.ok) {
-				return { state: "bad", note: `session ${response.status}`, ms: took(), at: Date.now() };
-			}
-			const data = await response.json();
-			const ok = Boolean(data?.id && data?.origin);
-			return {
-				state: ok ? "ok" : "bad",
-				note: ok ? "session ready" : "session incomplete",
-				ms: took(),
-				at: Date.now(),
-			};
-		} catch {
-			return { state: "bad", note: "session unreachable", ms: took(), at: Date.now() };
-		}
-	}
-
 	if (engine === "scramjet") {
 		if (!state.controller) {
 			return { state: "bad", note: "controller not ready", ms: took(), at: Date.now() };
 		}
 		return { state: "ok", note: "controller ready", ms: took(), at: Date.now() };
+	}
+
+	// Rammerhead answers a HEAD on its own origin. A remote server that is not
+	// reachable is still a configured lane, so the note names which case it is.
+	if (engine === "rammerhead") {
+		const base = state.rammerhead?.origin || RH_BASE;
+		if (!base) {
+			return { state: "bad", note: "no server", ms: took(), at: Date.now() };
+		}
+		try {
+			await withTimeout(fetch(`${base}/`, { method: "HEAD", mode: "no-cors" }), 6000, "rh probe");
+			return { state: "ok", note: "server answers", ms: took(), at: Date.now() };
+		} catch {
+			return { state: "bad", note: "server unreachable", ms: took(), at: Date.now() };
+		}
 	}
 
 	// Ultraviolet is a service worker plus its engine script. A registration that
@@ -490,7 +557,7 @@ async function probeEngine(engine) {
 		return { state: "bad", note: "engine not registered", ms: took(), at: Date.now() };
 	}
 	const workers = await swReport();
-	const scope = workers.find((entry) => entry.scope === "/uv/service/");
+	const scope = workers.find((entry) => entry.scope === UV_PREFIX);
 	if (!scope?.active) {
 		return {
 			state: "bad",
@@ -579,27 +646,13 @@ function withTimeout(promise, ms, label) {
 	]);
 }
 
-async function discoverEngines() {
-	try {
-		const response = await fetch("/api/engines", { cache: "no-store" });
-		if (!response.ok) return;
-		const data = await response.json();
-		const rammerhead = data?.engines?.rammerhead;
-		if (rammerhead?.origin) {
-			state.rammerhead = { origin: rammerhead.origin };
-			mark("rammerhead:available");
-		}
-	} catch (error) {
-		console.warn("engine discovery failed:", error?.message || error);
-	}
-}
-
 async function initTransport() {
 	// The transport module is a 1.7 MB import that the bare-mux worker pulls on
 	// demand. Firing setTransport while the document is still fetching its own
 	// assets loses the worker's reply often enough to be worth a retry, and a
 	// cache-busted worker path is the only way to get a fresh SharedWorker.
 	const attempts = [BAREMUX_WORKER, `${BAREMUX_WORKER}&retry=${Date.now()}`];
+	WISP_URL = readWispUrl();
 	let lastError = null;
 
 	for (const workerPath of attempts) {
@@ -607,7 +660,7 @@ async function initTransport() {
 			state.connection = new BareMuxConnection(workerPath);
 			mark("baremux:connection");
 			await withTimeout(
-				state.connection.setTransport("/transport/epoxy.mjs", [{ wisp: WISP_URL }]),
+				state.connection.setTransport(TRANSPORT_URL, [{ wisp: WISP_URL }]),
 				12000,
 				"setTransport"
 			);
@@ -730,7 +783,7 @@ async function initScramjet() {
 	await new Promise((resolve, reject) => {
 		if (globalThis.$scramjetLoadController) return resolve();
 		const script = document.createElement("script");
-		script.src = "/scramjet/scramjet.all.js";
+		script.src = SJ_FILES.all;
 		script.onload = resolve;
 		script.onerror = () => reject(new Error("scramjet bundle failed to load"));
 		document.head.appendChild(script);
@@ -770,36 +823,60 @@ async function initScramjet() {
 	return controller;
 }
 
-async function registerWorkers() {
-	// navigator.serviceWorker.ready only resolves for a worker that controls
-	// this page; both proxies live under their own scopes, so awaiting it here
-	// would deadlock the boot. Wait on the registrations themselves instead.
-	const jobs = [
-		navigator.serviceWorker.register("/uv/sw.js", { scope: UV_PREFIX }),
-		navigator.serviceWorker.register("/scramjet/sw.js", { scope: SJ_PREFIX }),
-	];
-	const results = await Promise.allSettled(jobs);
-	for (const result of results) {
-		if (result.status === "rejected") {
-			console.warn("sw registration failed:", result.reason);
-			continue;
+// A registration that resolves is not a worker that can serve: the install has
+// to reach "activated" before the scope answers fetches. The first attempt
+// happens while the document is still settling and can lose its install, so
+// every lane is retried until it reports an activated worker.
+const WORKER_TARGETS = [
+	{ engine: "ultraviolet", script: () => asset("uv/sw.js"), scope: () => UV_PREFIX },
+	{ engine: "scramjet", script: () => asset("scramjet/sw.js"), scope: () => SJ_PREFIX },
+];
+
+async function activeWorkerFor(scope) {
+	const workers = await swReport();
+	const entry = workers.find((item) => item.scope === scope);
+	return entry?.active ? entry.active : "";
+}
+
+async function claimWorker({ engine, script, scope }, attempts) {
+	const scopePath = scope();
+	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		try {
+			const registration = await navigator.serviceWorker.register(script(), {
+				scope: scopePath,
+				updateViaCache: "none",
+			});
+			const installer = registration.installing || registration.waiting;
+			if (installer && !registration.active) {
+				await new Promise((resolve) => {
+					const timer = setTimeout(resolve, 6000);
+					installer.addEventListener("statechange", () => {
+						if (installer.state === "activated" || installer.state === "redundant") {
+							clearTimeout(timer);
+							resolve();
+						}
+					});
+				});
+			}
+			if (await activeWorkerFor(scopePath)) return true;
+		} catch (error) {
+			// A failed install is retried: the second attempt runs after the
+			// document has settled, which is when the install actually lands.
+			console.warn(`${engine} sw attempt ${attempt} failed:`, error?.message || error);
 		}
-		const registration = result.value;
-		if (registration.active) continue;
-		await Promise.race([
-			registration.installing?.state === "installing"
-				? new Promise((resolve) => {
-						registration.installing.addEventListener("statechange", function onChange() {
-							if (registration.installing?.state === "activated") {
-								registration.installing.removeEventListener("statechange", onChange);
-								resolve();
-							}
-						});
-					})
-				: Promise.resolve(),
-			new Promise((resolve) => setTimeout(resolve, 4000)),
-		]);
+		await new Promise((resolve) => setTimeout(resolve, 600 * attempt));
 	}
+	const active = await activeWorkerFor(scopePath);
+	if (!active) console.warn(`${engine} sw never activated`);
+	return Boolean(active);
+}
+
+async function registerWorkers() {
+	const results = await Promise.all(WORKER_TARGETS.map((target) => claimWorker(target, 3)));
+	WORKER_TARGETS.forEach((target, index) => {
+		state.engines[target.engine] = results[index];
+	});
+	return results;
 }
 
 /* ------------------------------------------------------------------- tabs */
@@ -976,8 +1053,6 @@ function settleLoad(tab) {
 // Reads the real destination out of a proxy iframe. Scramjet and Ultraviolet
 // both encode the target in the frame URL, so the load event is the reliable
 // signal — Scramjet's urlchange only fires once the proxified client boots.
-// Rammerhead shuffles the URL it puts in the address bar, but it shares this
-// origin, so the proxied document answers with the unshuffled destination.
 function decodeFrameUrl(tab) {
 	let href = "";
 	try {
@@ -998,8 +1073,9 @@ function decodeFrameUrl(tab) {
 	}
 
 	if (tab.engine === "rammerhead") {
-		// hammerhead overrides document.URL on the proxied page, so this is the
-		// destination rather than the _rhs… shuffled form in the frame path.
+		// Same-origin Rammerhead answers with document.URL on the proxied page; a
+		// remote one is cross-origin and unreadable, so the tab keeps the URL it
+		// asked for and the frame is trusted on the load event alone.
 		try {
 			const url = tab.frame.contentDocument?.URL || "";
 			return /^https?:/i.test(url) ? url : "";
@@ -1168,13 +1244,19 @@ function renderEngines() {
 	const current = tab ? tab.engine : state.engine;
 	dom.engine.replaceChildren();
 	for (const engine of ENGINE_ORDER) {
-		if (!isEngineUsable(engine)) continue;
+		const usable = isEngineUsable(engine);
+		// Rammerhead is always listed: it is a server-side lane, so "missing a
+		// server" is a configuration state the user can fix, not a dead engine
+		// that should vanish from the bar.
+		if (!usable && engine !== "rammerhead") continue;
 		const button = document.createElement("button");
 		const on = engine === current;
-		button.className = `engine-btn${on ? " is-active" : ""}`;
+		button.className = `engine-btn${on ? " is-active" : ""}${usable ? "" : " is-unavailable"}`;
 		button.dataset.engine = engine;
 		button.setAttribute("role", "tab");
 		button.setAttribute("aria-selected", String(on));
+		button.setAttribute("aria-disabled", String(!usable));
+		if (!usable) button.title = "Add a Rammerhead server in Settings to enable this lane";
 		button.textContent = ENGINE_LABEL[engine];
 		dom.engine.appendChild(button);
 	}
@@ -1726,7 +1808,13 @@ function bindUi() {
 	});
 	dom.engine.addEventListener("click", (event) => {
 		const button = event.target.closest(".engine-btn");
-		if (button?.dataset.engine) switchEngine(button.dataset.engine);
+		const engine = button?.dataset.engine;
+		if (!engine) return;
+		if (!isEngineUsable(engine)) {
+			toast("Rammerhead needs a server — add one in Settings.", "error");
+			return;
+		}
+		switchEngine(engine);
 	});
 	document.addEventListener("keydown", (event) => {
 		const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || "");
@@ -1802,9 +1890,8 @@ async function boot() {
 	const overlay = bootOverlay();
 	setStatus("connecting", "busy");
 
-	// Engine discovery and the transport are independent: Rammerhead works with
-	// no service worker and no wisp at all, so it must be allowed to come online
-	// even when the transport cannot.
+	// Discovery first: the hub server advertises Rammerhead, and the lane list is
+	// built from it, so it has to resolve before the first tab exists.
 	await discoverEngines();
 
 	// Let the page finish its own fetches before pulling the transport module;
@@ -1867,6 +1954,17 @@ async function boot() {
 	if (stealth) {
 		history.replaceState(null, "", location.pathname + location.search);
 		navigate(stealth);
+	}
+
+	// The hub hand-off uses query params: ?url= for a destination, ?q= for a
+	// search term. Both are consumed once and stripped so a reload does not
+	// re-navigate and a shared link stays clean.
+	const params = new URLSearchParams(location.search);
+	const target = params.get("url");
+	const query = params.get("q");
+	if (target || query) {
+		history.replaceState(null, "", location.pathname);
+		navigate(target || query);
 	}
 
 	navigator.serviceWorker.addEventListener("controllerchange", () => {

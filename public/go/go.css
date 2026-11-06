@@ -112,6 +112,18 @@ button { cursor: pointer; }
 	box-shadow: inset 0 0 0 1px rgba(239, 51, 64, 0.24);
 }
 
+/* A configured-but-serverless lane stays visible as a dimmed hint instead of
+   disappearing, so the engine bar never silently loses an option. */
+.engine-btn.is-unavailable {
+	opacity: 0.42;
+	cursor: help;
+}
+
+.engine-btn.is-unavailable:hover {
+	opacity: 0.62;
+	color: var(--muted-2);
+}
+
 .chrome-right {
 	margin-left: auto;
 	display: flex;
