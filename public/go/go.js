@@ -28,6 +28,14 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // relay. The token host is also the only one of these that a content filter is
 // unlikely to have ever seen.
 //
+// `af-wisp-relay` is the self-hosted lane: a Wisp v2 server on Cloudflare Workers
+// (relay/worker.mjs in the repo). It exists because *.workers.dev is a different
+// domain category from every public relay, so a filter that drops the others can
+// still allow this one. Two limits are inherent to the platform and not bugs:
+// Cloudflare refuses outbound TCP to its own address ranges, so Cloudflare-fronted
+// sites fail on this lane, and the stream count per origin is capped, so it is a
+// browsing relay rather than a tunnel.
+//
 // Shape: `mint` returns JSON, `token` names the field, `socket` builds the URL.
 const RELAY_MINTS = [
 	{
@@ -35,6 +43,12 @@ const RELAY_MINTS = [
 		mint: "https://desynctutoring.com/api/session",
 		token: "s",
 		socket: (token) => `wss://desynctutoring.com/wisp/?s=${encodeURIComponent(token)}`,
+	},
+	{
+		label: "workers-dev",
+		mint: "https://af-wisp-relay.jaay847.workers.dev/api/session",
+		token: "s",
+		socket: (token) => `wss://af-wisp-relay.jaay847.workers.dev/wisp/?s=${encodeURIComponent(token)}`,
 	},
 ];
 
@@ -115,6 +129,44 @@ async function mintRelayUrl(only = null) {
 		}
 	}
 	return null;
+}
+
+// Every tokened relay is raced instead of ordered. Which host a filter allows is
+// a property of the filter, not of the relay, so a fixed ladder spends a full
+// handshake timeout on each blocked host before reaching the one that works. Each
+// entry mints its own token — a token is bound to one seat and cannot be replayed
+// across relays — then opens one socket; the first to complete a handshake wins.
+async function raceRelays() {
+	const attempts = RELAY_MINTS.map(async (entry) => {
+		const minted = await mintRelayUrl(entry);
+		if (!minted) return null;
+		const probe = await probeWispAt(minted.url);
+		return probe.state === "ok" ? { entry, url: minted.url, probe } : null;
+	});
+	const settled = await Promise.all(attempts);
+	return settled.filter(Boolean).sort((a, b) => a.probe.ms - b.probe.ms);
+}
+
+function adoptRelay(winner) {
+	WISP_URL = winner.url;
+	WISP_ROTATED = winner.url;
+	RELAY_ACTIVE = winner.entry;
+	state.health.wisp = {
+		...winner.probe,
+		url: relayDisplay(winner.url),
+		note: `tokened relay ${winner.entry.label}`,
+	};
+	renderDrawer();
+	return state.health.wisp;
+}
+
+// A tokened relay is the intended lane and is awaited rather than raced against
+// the public pool: the pool is a list of hosts a filter has already seen, so it
+// loses to any relay that answers at all.
+async function tryRelays() {
+	const winners = await raceRelays();
+	if (!winners.length) return null;
+	return adoptRelay(winners[0]);
 }
 
 // A Settings override names a host, not a credential. If the host happens to be
@@ -738,18 +790,8 @@ function probeWisp() {
 // silently swapped.
 async function resolveWisp() {
 	if (!hasWispOverride()) {
-		const minted = await mintRelayUrl();
-		if (minted) {
-			const probe = await probeWispAt(minted.url);
-			if (probe.state === "ok") {
-				WISP_URL = minted.url;
-				WISP_ROTATED = minted.url;
-				RELAY_ACTIVE = minted.entry;
-				state.health.wisp = { ...probe, url: relayDisplay(minted.url), note: `tokened relay ${minted.entry.label}` };
-				renderDrawer();
-				return state.health.wisp;
-			}
-		}
+		const relayed = await tryRelays();
+		if (relayed) return relayed;
 	}
 
 	const verdict = await probeWisp();
@@ -778,18 +820,8 @@ async function resolveWispFast() {
 	// trip against a host the filter has no reason to have categorised, and a
 	// public wisp pool will lose the race on a filtered network anyway.
 	if (!hasWispOverride()) {
-		const minted = await mintRelayUrl();
-		if (minted) {
-			const probe = await probeWispAt(minted.url);
-			if (probe.state === "ok") {
-				WISP_URL = minted.url;
-				WISP_ROTATED = minted.url;
-				RELAY_ACTIVE = minted.entry;
-				state.health.wisp = { ...probe, url: relayDisplay(minted.url), note: `tokened relay ${minted.entry.label}` };
-				renderDrawer();
-				return state.health.wisp;
-			}
-		}
+		const relayed = await tryRelays();
+		if (relayed) return relayed;
 	}
 
 	const primary = await probeWisp();
