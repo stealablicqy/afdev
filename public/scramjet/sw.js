@@ -4,7 +4,7 @@
 // jsDelivr or Pages subpath and the worker never installs.
 const DIR = new URL('./', self.location.href).href;
 
-importScripts(DIR + 'scramjet.all.js?v=25');
+importScripts(DIR + 'scramjet.all.js?v=26');
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
