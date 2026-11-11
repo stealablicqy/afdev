@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-8"?>
+<?xml version="1.0" encoding="UTF-8"?>
 <!--
   CDN entry point. jsDelivr serves .html as text/plain, so a page cannot be
   opened directly from the CDN. An SVG document is served as image/svg+xml and
@@ -155,7 +155,7 @@
       // Synthetic path: the worker turns any document request in its scope into
       // the app shell, so the URL does not have to name a real file. The version
       // query keeps a CDN-cached shell from pinning an old build.
-      frame.src = BASE + "app?v=24";
+      frame.src = BASE + "app?v=25";
       say("");
     }
 
