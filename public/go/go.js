@@ -20,6 +20,24 @@ const SJ_FILES = {
 const WISP_KEY = "af.go.wisp";
 const WISP_DEFAULT = "wss://anura.pro/wisp/";
 
+// Category filters block by hostname, not by protocol. A relay on a domain that
+// reads as an ordinary site survives where `wisp.<something>.dev` gets filed
+// under "proxy" and dropped. These entries are tokened relays: the host mints a
+// short-lived session over HTTPS and the socket carries it in `?s=`, so the
+// upgrade looks like authenticated traffic to a normal site rather than an open
+// relay. The token host is also the only one of these that a content filter is
+// unlikely to have ever seen.
+//
+// Shape: `mint` returns JSON, `token` names the field, `socket` builds the URL.
+const RELAY_MINTS = [
+	{
+		label: "desynctutoring",
+		mint: "https://desynctutoring.com/api/session",
+		token: "s",
+		socket: (token) => `wss://desynctutoring.com/wisp/?s=${encodeURIComponent(token)}`,
+	},
+];
+
 // Public relays come and go, and a stale default is the difference between a
 // working proxy and a dead one. Probed in order after the primary refuses; the
 // first socket that opens becomes the runtime relay and is remembered for the tab.
@@ -45,13 +63,89 @@ function readWispUrl() {
 	return /^wss?:\/\//i.test(stored) ? stored : WISP_DEFAULT;
 }
 
+function hasWispOverride() {
+	try {
+		return /^wss?:\/\//i.test(localStorage.getItem(WISP_KEY) || "");
+	} catch {
+		return false;
+	}
+}
+
 let WISP_URL = readWispUrl();
 // Set when a probe rotated off a dead primary, so initTransport and re-seats keep
 // using the relay that actually answered instead of re-reading the dead default.
 let WISP_ROTATED = "";
+// The mint entry currently carrying the session, when one is. Kept so every
+// re-seat re-mints instead of replaying an expired token.
+let RELAY_ACTIVE = null;
 
 function activeWispUrl() {
 	return WISP_ROTATED || readWispUrl();
+}
+
+// Tokens are timestamped and short-lived, so they are minted per call site
+// rather than cached. One small GET; a blocked host fails fast and the caller
+// falls through to the public pool.
+//
+// The mint host drops requests that arrive without a Referer. This document sets
+// `meta[name=referrer]` to `no-referrer` for cloak reasons, which would strip it
+// on every one of these calls, so each attempt overrides the policy explicitly.
+// A plain http page cannot send a Referer to an https target at all, which is why
+// this only resolves once the hub is served over https.
+const MINT_POLICIES = ["origin", undefined, "unsafe-url"];
+
+async function mintRelayUrl(only = null) {
+	const entries = only ? [only] : RELAY_MINTS;
+	for (const entry of entries) {
+		for (const referrerPolicy of MINT_POLICIES) {
+			try {
+				const response = await fetch(entry.mint, {
+					credentials: "same-origin",
+					cache: "no-store",
+					...(referrerPolicy ? { referrerPolicy } : {}),
+				});
+				if (!response.ok) continue;
+				const body = await response.json();
+				const token = body?.[entry.token];
+				if (typeof token === "string" && token.length > 8) return { entry, url: entry.socket(token) };
+			} catch (error) {
+				console.warn(`relay mint ${entry.label} failed:`, error?.message || error);
+				break;
+			}
+		}
+	}
+	return null;
+}
+
+// A Settings override names a host, not a credential. If the host happens to be
+// a tokened relay, the stored URL still needs a live token or the socket refuses
+// the upgrade — so the entry is recovered by host and re-minted like any other.
+function relayEntryFor(url) {
+	let host = "";
+	try {
+		host = new URL(url).host;
+	} catch {
+		return null;
+	}
+	for (const entry of RELAY_MINTS) {
+		try {
+			if (new URL(entry.socket("probe")).host === host) return entry;
+		} catch {
+			// malformed entry: skip
+		}
+	}
+	return null;
+}
+
+// The health record is rendered in the drawer and copied into support posts, so
+// the session token never travels with it.
+function relayDisplay(url) {
+	try {
+		const parsed = new URL(url);
+		return parsed.origin + parsed.pathname;
+	} catch {
+		return url;
+	}
 }
 
 // Bump when the bare-mux worker changes: the browser caches SharedWorker scripts
@@ -638,20 +732,30 @@ function probeWisp() {
 	});
 }
 
-// A refused primary is not a dead proxy: rotate through the public relays and
-// keep the first one that completes a handshake. Only a user-set relay is
-// respected verbatim, so a Settings override never gets silently swapped.
+// A refused primary is not a dead proxy: rotate through the tokened relays and
+// then the public pool, keeping the first one that completes a handshake. Only a
+// user-set relay is respected verbatim, so a Settings override never gets
+// silently swapped.
 async function resolveWisp() {
+	if (!hasWispOverride()) {
+		const minted = await mintRelayUrl();
+		if (minted) {
+			const probe = await probeWispAt(minted.url);
+			if (probe.state === "ok") {
+				WISP_URL = minted.url;
+				WISP_ROTATED = minted.url;
+				RELAY_ACTIVE = minted.entry;
+				state.health.wisp = { ...probe, url: relayDisplay(minted.url), note: `tokened relay ${minted.entry.label}` };
+				renderDrawer();
+				return state.health.wisp;
+			}
+		}
+	}
+
 	const verdict = await probeWisp();
 	if (verdict.state === "ok") return verdict;
 
-	let stored = "";
-	try {
-		stored = localStorage.getItem(WISP_KEY) || "";
-	} catch {
-		// storage blocked: treat as no override
-	}
-	if (/^wss?:\/\//i.test(stored)) return verdict;
+	if (hasWispOverride()) return verdict;
 
 	for (const relay of WISP_FALLBACKS) {
 		const probe = await probeWispAt(relay);
@@ -670,16 +774,28 @@ async function resolveWisp() {
 // with five dead entries stalled boot for half a minute before the transport
 // even started. Racing them costs a single timeout and keeps the fastest relay.
 async function resolveWispFast() {
+	// Tokened relay first, and awaited rather than raced: it is one HTTPS round
+	// trip against a host the filter has no reason to have categorised, and a
+	// public wisp pool will lose the race on a filtered network anyway.
+	if (!hasWispOverride()) {
+		const minted = await mintRelayUrl();
+		if (minted) {
+			const probe = await probeWispAt(minted.url);
+			if (probe.state === "ok") {
+				WISP_URL = minted.url;
+				WISP_ROTATED = minted.url;
+				RELAY_ACTIVE = minted.entry;
+				state.health.wisp = { ...probe, url: relayDisplay(minted.url), note: `tokened relay ${minted.entry.label}` };
+				renderDrawer();
+				return state.health.wisp;
+			}
+		}
+	}
+
 	const primary = await probeWisp();
 	if (primary.state === "ok") return primary;
 
-	let stored = "";
-	try {
-		stored = localStorage.getItem(WISP_KEY) || "";
-	} catch {
-		// storage blocked: treat as no override
-	}
-	if (/^wss?:\/\//i.test(stored)) return primary;
+	if (hasWispOverride()) return primary;
 
 	const probes = await Promise.all(WISP_FALLBACKS.map((relay) => probeWispAt(relay).then((p) => ({ relay, ...p }))));
 	const winner = probes.filter((p) => p.state === "ok").sort((a, b) => a.ms - b.ms)[0];
@@ -755,6 +871,25 @@ async function initTransport() {
 	// assets loses the worker's reply often enough to be worth a retry, and a
 	// cache-busted worker path is the only way to get a fresh SharedWorker.
 	const attempts = [BAREMUX_WORKER, `${BAREMUX_WORKER}&retry=${Date.now()}`];
+	// A tokened relay expires: the token carries its mint timestamp. Every seat,
+	// including a re-seat after a dropped socket, trades it for a fresh one so a
+	// long-lived tab does not come back to a relay that rejects its credential.
+	// The same rule applies to a tokened Settings override, which names a host but
+	// carries a token that was minted whenever the user pasted it.
+	const relay = RELAY_ACTIVE || relayEntryFor(activeWispUrl());
+	if (relay) {
+		const fresh = await mintRelayUrl(relay);
+		if (fresh) {
+			WISP_URL = fresh.url;
+			WISP_ROTATED = fresh.url;
+			RELAY_ACTIVE = fresh.entry;
+		} else {
+			// Mint host unreachable this time: stop replaying a token that is now
+			// stale and let the public pool carry the seat.
+			RELAY_ACTIVE = null;
+			WISP_ROTATED = "";
+		}
+	}
 	WISP_URL = activeWispUrl();
 	let lastError = null;
 
