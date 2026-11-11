@@ -1,6 +1,6 @@
 /* AF Hub app-shell cache plus an opt-in-or-on-by-default shield for known tracker requests initiated by AF Hub itself.
    It does not proxy traffic, inspect TLS, or protect other browser tabs/apps. */
-const CACHE = 'af-hub-v25';
+const CACHE = 'af-hub-v26';
 const SHELL = [
   './', './index.html', './manifest.webmanifest',
   './css/app.css', './css/desync-inspired.css', './css/af-music.css', './css/browser.css', './css/revamp.css', './css/stellar.css',
@@ -57,7 +57,7 @@ self.addEventListener('message', event => {
   }
 });
 // Paths owned by a proxy lane. This worker is registered at the app directory
-// (<scope>), so it also sees every proxied page — those responses belong to the
+// (<scope>), so it also sees every proxied page â€” those responses belong to the
 // engine, not the app shell: caching one would pin a proxied page in the hub
 // cache, and the offline fallback below would answer it with index.html.
 const SCOPE_PATH = new URL(self.registration.scope).pathname;
