@@ -1,0 +1,315 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Standalone network diagnostic. jsDelivr serves .html as text/plain, so this is
+  an SVG document instead: image/svg+xml executes, and it needs no service
+  worker, which matters because a SW would answer from cache and hide the very
+  failures being measured.
+
+  Open: https://cdn.jsdelivr.net/gh/stealablicqy/afdev@HEAD/public/diag.svg
+
+  Run it on the network that is failing. It reports whether that network allows
+  outbound HTTPS, whether DNS-over-HTTPS resolves, and whether a WebSocket
+  handshake completes — which is the only transport the proxy stack has.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="100%" height="100%" style="position: fixed; inset: 0; background: #0b0f14;">
+  <title>AF network diagnostic</title>
+  <foreignObject x="0" y="0" width="100%" height="100%">
+    <body xmlns="http://www.w3.org/1999/xhtml" style="margin: 0; padding: 22px; background: #0b0f14; color: #d7e0ea; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; overflow: auto;">
+      <div style="font-size: 15px; font-weight: 600; margin-bottom: 2px;">AF network diagnostic</div>
+      <div style="color: #7d8b9c; margin-bottom: 16px; max-width: 900px;">
+        Run this on the network that is failing. It reports what that network lets through,
+        so the proxy can be pointed at something that actually connects.
+      </div>
+      <div style="margin-bottom: 14px;">
+        <button id="run" style="font: inherit; padding: 7px 14px; border-radius: 6px; cursor: pointer; background: #1b2733; color: #d7e0ea; border: 1px solid #2c3d4f;">Run tests</button>
+        <button id="copy" style="font: inherit; padding: 7px 14px; border-radius: 6px; cursor: pointer; background: #1b2733; color: #d7e0ea; border: 1px solid #2c3d4f;">Copy JSON</button>
+        <span id="status" style="color: #5b6878; margin-left: 8px;">ready</span>
+      </div>
+      <pre id="out" style="background: #111820; border: 1px solid #1d2834; border-radius: 6px; padding: 14px; max-width: 900px; white-space: pre-wrap; word-break: break-word; margin: 0;">not run</pre>
+    </body>
+  </foreignObject>
+  <script><![CDATA[
+  (function () {
+    "use strict";
+
+    var TIMEOUT = 8000;
+
+    // cdn.jsdelivr.net is the control: it already loads on the failing network,
+    // so anything that fails where it succeeds is blocked on its own merits.
+    var HTTPS = [
+      ["cdn.jsdelivr.net", "https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/README.md", "control"],
+      ["www.example.com", "https://www.example.com/", "control"],
+      ["github.com", "https://github.com/", "control"],
+      ["afdev.jaay847.workers.dev", "https://afdev.jaay847.workers.dev/", "relay host"],
+      ["af-game-hub-desync-inspired.jaay847.workers.dev", "https://af-game-hub-desync-inspired.jaay847.workers.dev/", "relay host"],
+      ["af-hub-c8v.pages.dev", "https://af-hub-c8v.pages.dev/", "relay host"],
+      ["anura.pro", "https://anura.pro/", "current wisp host"],
+      ["wisp.mercurywork.shop", "https://wisp.mercurywork.shop/", "fallback wisp host"]
+    ];
+
+    var DNS = [
+      "cdn.jsdelivr.net",
+      "github.com",
+      "afdev.jaay847.workers.dev",
+      "af-game-hub-desync-inspired.jaay847.workers.dev",
+      "af-hub-c8v.pages.dev",
+      "anura.pro",
+      "wisp.mercurywork.shop"
+    ];
+
+    var WS = [
+      ["wss://anura.pro/wisp/", "current relay"],
+      ["wss://wisp.mercurywork.shop/", "fallback relay"],
+      ["wss://afdev.jaay847.workers.dev/wisp/", "self-hosted candidate"],
+      ["wss://ws.postman-echo.com/raw", "control"]
+    ];
+
+    var results = { startedAt: new Date().toISOString(), https: {}, doh: {}, ws: {} };
+    var order = { https: [], doh: [], ws: [] };
+    var finished = 0;
+    var total = HTTPS.length + DNS.length + WS.length;
+
+    function ms(t0) { return Math.round(performance.now() - t0); }
+
+    // A no-cors GET resolves to an opaque response for any HTTP status, including
+    // 403 and 404. It rejects only when DNS, TCP, TLS, or the path itself failed.
+    // That is exactly the signal wanted, and it needs no CORS headers from the host.
+    function probeHttps(url) {
+      var t0 = performance.now();
+      var ctrl = new AbortController();
+      var timer = setTimeout(function () { ctrl.abort(); }, TIMEOUT);
+      return fetch(url, { mode: "no-cors", cache: "no-store", redirect: "follow", signal: ctrl.signal })
+        .then(function () {
+          return { state: "reachable", ms: ms(t0), ok: true };
+        })
+        .catch(function (error) {
+          var timedOut = ctrl.signal.aborted;
+          return {
+            state: timedOut ? "timeout" : (error && error.name) || "network error",
+            ms: ms(t0),
+            ok: false
+          };
+        })
+        .then(function (r) { clearTimeout(timer); return r; });
+    }
+
+    // Cloudflare and Google both serve DoH with permissive CORS. A successful
+    // answer proves the name exists publicly, independent of the local resolver.
+    function probeDoh(name) {
+      var providers = [
+        ["cloudflare", "https://cloudflare-dns.com/dns-query?name=" + encodeURIComponent(name) + "&type=A"],
+        ["google", "https://dns.google/resolve?name=" + encodeURIComponent(name) + "&type=A"]
+      ];
+
+      function attempt(i) {
+        if (i >= providers.length) {
+          return Promise.resolve({ state: "DoH blocked", ms: 0, ok: false, provider: "none" });
+        }
+        var t0 = performance.now();
+        var ctrl = new AbortController();
+        var timer = setTimeout(function () { ctrl.abort(); }, TIMEOUT);
+        return fetch(providers[i][1], {
+          cache: "no-store",
+          headers: { accept: "application/dns-json" },
+          signal: ctrl.signal
+        })
+          .then(function (res) { return res.json(); })
+          .then(function (json) {
+            clearTimeout(timer);
+            var answers = (json.Answer || []).filter(function (a) { return a.type === 1; })
+              .map(function (a) { return a.data; });
+            return {
+              state: answers.length ? answers.slice(0, 3).join(", ") : "no A record",
+              ms: ms(t0),
+              ok: answers.length > 0,
+              provider: providers[i][0]
+            };
+          })
+          .catch(function () {
+            clearTimeout(timer);
+            return attempt(i + 1);
+          });
+      }
+
+      return attempt(0);
+    }
+
+    // The API cannot distinguish "network refused the connection" from "connected
+    // but not a WebSocket server", but the timing is a usable proxy: a sub-150ms
+    // error smells like a local block or a dead DNS entry, while a multi-second
+    // error smells like a TCP connect followed by a protocol rejection.
+    function probeWs(url) {
+      return new Promise(function (resolve) {
+        var t0 = performance.now();
+        var settled = false;
+        var timer = setTimeout(function () { finish("timeout", false); }, TIMEOUT);
+        var socket;
+
+        function finish(state, ok) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          if (socket) { try { socket.close(); } catch (e) { /* already closed */ } }
+          resolve({ state: state, ms: ms(t0), ok: ok });
+        }
+
+        try {
+          socket = new WebSocket(url);
+        } catch (error) {
+          return finish("ctor error", false);
+        }
+        socket.addEventListener("open", function () { finish("open", true); });
+        // Only a completed handshake counts. The label still separates the two
+        // failure shapes, because they mean different things: "blocked" is a dead
+        // name or a local refusal, "rejected" is a live host that is not serving WS.
+        socket.addEventListener("error", function () {
+          finish(ms(t0) < 150 ? "blocked" : "rejected", false);
+        });
+      });
+    }
+
+    function pad(text, width) {
+      text = String(text);
+      while (text.length < width) text += " ";
+      return text;
+    }
+
+    function line(name, note, r) {
+      if (!r) return "  " + pad(name, 46) + pad("…", 8) + note;
+      return "  " + pad(name, 46) + pad(r.ok ? "ok" : "fail", 8) +
+        pad(r.state, 26) + pad(r.ms + " ms", 9) + note;
+    }
+
+    function render() {
+      var out = [];
+
+      out.push("OUTBOUND HTTPS  (did the request leave the browser at all)");
+      HTTPS.forEach(function (entry) {
+        out.push(line(entry[0], entry[2], results.https[entry[0]]));
+      });
+
+      out.push("");
+      out.push("DNS over HTTPS  (does the name resolve publicly, bypassing the local resolver)");
+      DNS.forEach(function (name) {
+        var r = results.doh[name];
+        out.push(line(name, r ? r.provider : "", r));
+      });
+
+      out.push("");
+      out.push("WEBSOCKET HANDSHAKE  (the only transport the proxy stack has)");
+      WS.forEach(function (entry) {
+        out.push(line(entry[0], entry[1], results.ws[entry[0]]));
+      });
+
+      out.push("");
+      out.push("VERDICT");
+      out.push(summary());
+
+      document.getElementById("out").textContent = out.join("\n");
+    }
+
+    function summary() {
+      var ctrl = results.https["cdn.jsdelivr.net"];
+      var workers = Object.keys(results.https).filter(function (k) { return k.indexOf("workers.dev") >= 0; });
+      var workersOk = workers.filter(function (k) { return results.https[k].ok; }).length;
+      var wsKeys = Object.keys(results.ws);
+      var wsOpen = wsKeys.filter(function (k) { return results.ws[k].ok; });
+      var wispOpen = wsOpen.filter(function (k) { return k.indexOf("/wisp/") >= 0; });
+
+      var out = [];
+      out.push("  control cdn.jsdelivr.net: " + (ctrl ? ctrl.state : "not run"));
+      out.push("  workers.dev reachable over HTTPS: " + workersOk + "/" + workers.length);
+      out.push("  websocket opened: " + (wsOpen.length ? wsOpen.join(", ") : "none"));
+      out.push("");
+
+      if (finished < total) {
+        out.push("  still running…");
+        return out.join("\n");
+      }
+
+      if (!wsOpen.length) {
+        out.push("  No WebSocket handshake completed anywhere, not even the control.");
+        out.push("  This stack has exactly one transport: epoxy, wisp over WebSocket.");
+        out.push("  If no WebSocket opens here, no wisp host can fix it, public or");
+        out.push("  self-hosted. The block is on the WebSocket upgrade itself, not on");
+        out.push("  the relay's domain name. A browser proxy cannot cross that.");
+      } else if (!wispOpen.length) {
+        out.push("  WebSockets work, but no wisp relay answered. The block is on the");
+        out.push("  relay host. A relay on a host this network already reaches is the fix.");
+      } else {
+        out.push("  " + wispOpen[0] + " completed a handshake. Point the transport there.");
+      }
+
+      if (workers.length && workersOk === 0) {
+        out.push("");
+        out.push("  Note: no *.workers.dev host is reachable over HTTPS. Hosting a relay");
+        out.push("  there will not help — that domain is blocked before any socket opens.");
+      }
+
+      if (results.ws["wss://ws.postman-echo.com/raw"] &&
+          results.ws["wss://ws.postman-echo.com/raw"].ok) {
+        out.push("");
+        out.push("  The control WebSocket opened, so this network permits WebSockets.");
+      }
+
+      return out.join("\n");
+    }
+
+    function done() {
+      finished++;
+      document.getElementById("status").textContent = finished + "/" + total;
+      render();
+    }
+
+    function run() {
+      document.getElementById("run").disabled = true;
+      finished = 0;
+      total = HTTPS.length + DNS.length + WS.length;
+      results = { startedAt: new Date().toISOString(), https: {}, doh: {}, ws: {} };
+      document.getElementById("status").textContent = "0/" + total;
+      render();
+
+      var jobs = [];
+
+      HTTPS.forEach(function (entry) {
+        jobs.push(probeHttps(entry[1]).then(function (r) {
+          results.https[entry[0]] = r;
+          done();
+        }));
+      });
+
+      DNS.forEach(function (name) {
+        jobs.push(probeDoh(name).then(function (r) {
+          results.doh[name] = r;
+          done();
+        }));
+      });
+
+      WS.forEach(function (entry) {
+        jobs.push(probeWs(entry[0]).then(function (r) {
+          results.ws[entry[0]] = r;
+          done();
+        }));
+      });
+
+      Promise.all(jobs).then(function () {
+        document.getElementById("status").textContent = "done";
+        document.getElementById("run").disabled = false;
+        render();
+      });
+    }
+
+    document.getElementById("run").addEventListener("click", run);
+    document.getElementById("copy").addEventListener("click", function () {
+      var text = JSON.stringify(results, null, 2);
+      navigator.clipboard.writeText(text).then(function () {
+        document.getElementById("status").textContent = "copied";
+      }, function () {
+        document.getElementById("out").textContent = text;
+      });
+    });
+
+    run();
+  })();
+  ]]></script>
+</svg>
