@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AF network diagnostic</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin:0; padding:24px; background:#0b0f14; color:#d7e0ea;
+         font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  h1 { font-size:16px; margin:0 0 4px; font-weight:600; letter-spacing:.02em; }
+  .sub { color:#7d8b9c; margin-bottom:18px; }
+  button { font:inherit; padding:7px 14px; border-radius:6px; cursor:pointer;
+           background:#1b2733; color:#d7e0ea; border:1px solid #2c3d4f; }
+  button:hover { background:#233140; }
+  button:disabled { opacity:.45; cursor:default; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.09em;
+       color:#7d8b9c; margin:22px 0 8px; font-weight:600; }
+  table { border-collapse:collapse; width:100%; max-width:1100px; }
+  td, th { text-align:left; padding:5px 10px 5px 0; vertical-align:top;
+           border-bottom:1px solid #17202b; }
+  th { color:#7d8b9c; font-weight:500; }
+  td.t { color:#7d8b9c; white-space:nowrap; }
+  .ok   { color:#5ee08a; }
+  .fail { color:#ff6b6b; }
+  .slow { color:#ffc857; }
+  .dim  { color:#5b6878; }
+  pre { background:#111820; border:1px solid #1d2834; border-radius:6px;
+        padding:12px; overflow:auto; max-width:1100px; white-space:pre-wrap;
+        word-break:break-word; }
+  #summary { max-width:1100px; }
+  .row { display:flex; gap:10px; align-items:center; margin-bottom:16px; }
+</style>
+</head>
+<body>
+<h1>AF network diagnostic</h1>
+<div class="sub">Run this on the network that is failing. It reports what that network
+lets through, so the proxy config can be pointed at something that actually connects.</div>
+
+<div class="row">
+  <button id="run">Run tests</button>
+  <button id="copy">Copy JSON</button>
+  <span id="status" class="dim"></span>
+</div>
+
+<h2>1. Outbound HTTPS (can the browser reach the host at all)</h2>
+<table id="https"><tbody></tbody></table>
+
+<h2>2. DNS over HTTPS (does the domain resolve, bypassing the local resolver)</h2>
+<table id="doh"><tbody></tbody></table>
+
+<h2>3. WebSocket handshake (the exact thing the proxy needs)</h2>
+<table id="ws"><tbody></tbody></table>
+
+<h2>Summary</h2>
+<pre id="summary">not run</pre>
+
+<script>
+"use strict";
+
+const TIMEOUT = 8000;
+
+// cdn.jsdelivr.net is the control: it demonstrably loads on the failing network,
+// so anything that fails where this succeeds is blocked on its own merits.
+const HTTPS_TARGETS = [
+  ["cdn.jsdelivr.net", "https://cdn.jsdelivr.net/gh/stealablicqy/afdev@main/README.md", "control"],
+  ["example.com", "https://www.example.com/", "control"],
+  ["github.com", "https://github.com/", "control"],
+  ["afdev.jaay847.workers.dev", "https://afdev.jaay847.workers.dev/", "candidate relay host"],
+  ["af-game-hub-desync-inspired.jaay847.workers.dev", "https://af-game-hub-desync-inspired.jaay847.workers.dev/", "candidate relay host"],
+  ["af-hub-c8v.pages.dev", "https://af-hub-c8v.pages.dev/", "candidate relay host"],
+  ["anura.pro", "https://anura.pro/", "current wisp host"],
+  ["wisp.mercurywork.shop", "https://wisp.mercurywork.shop/", "fallback wisp host"],
+];
+
+const DNS_NAMES = [
+  "cdn.jsdelivr.net",
+  "github.com",
+  "afdev.jaay847.workers.dev",
+  "af-game-hub-desync-inspired.jaay847.workers.dev",
+  "af-hub-c8v.pages.dev",
+  "anura.pro",
+  "wisp.mercurywork.shop",
+];
+
+const WS_TARGETS = [
+  ["wss://anura.pro/wisp/", "current relay"],
+  ["wss://wisp.mercurywork.shop/", "fallback relay"],
+  ["wss://afdev.jaay847.workers.dev/wisp/", "self-hosted candidate"],
+  ["wss://ws.postman-echo.com/raw", "control (generic WS allowed?)"],
+];
+
+const results = { https: [], doh: [], ws: [], startedAt: new Date().toISOString() };
+
+const elapsed = (t0) => Math.round(performance.now() - t0);
+
+function cell(tr, text, cls) {
+  const td = document.createElement("td");
+  td.textContent = text;
+  if (cls) td.className = cls;
+  tr.appendChild(td);
+  return td;
+}
+
+function addRow(tableId, name, note, verdict, ms, cls) {
+  const tr = document.createElement("tr");
+  cell(tr, name, "");
+  cell(tr, note, "t");
+  cell(tr, verdict, cls);
+  cell(tr, ms + " ms", "t");
+  document.getElementById(tableId).tBodies[0].appendChild(tr);
+  return tr;
+}
+
+// A no-cors GET resolves to an opaque response whenever the request reached the
+// server and got any HTTP status back, including 403/404. It rejects only when
+// DNS, TCP, TLS, or the network path failed. That is exactly the signal wanted.
+async function probeHttps(url) {
+  const t0 = performance.now();
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort("timeout"), TIMEOUT);
+  try {
+    await fetch(url, { mode: "no-cors", cache: "no-store", redirect: "follow", signal: ctrl.signal });
+    return { verdict: "reachable", ms: elapsed(t0), kind: "ok" };
+  } catch (error) {
+    const ms = elapsed(t0);
+    const timedOut = ctrl.signal.aborted;
+    const detail = timedOut ? "timeout" : (error && error.name) || "network error";
+    return { verdict: timedOut ? "timeout" : detail, ms, kind: timedOut ? "slow" : "fail" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Cloudflare and Google both serve DoH with permissive CORS, so a successful
+// answer here proves the name exists publicly and that DoH itself is reachable.
+async function probeDoh(name) {
+  const providers = [
+    ["cloudflare", `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(name)}&type=A`],
+    ["google", `https://dns.google/resolve?name=${encodeURIComponent(name)}&type=A`],
+  ];
+  for (const [provider, url] of providers) {
+    const t0 = performance.now();
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort("timeout"), TIMEOUT);
+    try {
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: { accept: "application/dns-json" },
+        signal: ctrl.signal,
+      });
+      const json = await res.json();
+      const answers = (json.Answer || []).filter((a) => a.type === 1).map((a) => a.data);
+      clearTimeout(timer);
+      return {
+        verdict: answers.length ? answers.slice(0, 3).join(", ") : "no A record",
+        ms: elapsed(t0),
+        kind: answers.length ? "ok" : "slow",
+        provider,
+      };
+    } catch {
+      clearTimeout(timer);
+      if (provider === "google") {
+        return { verdict: "DoH blocked", ms: elapsed(t0), kind: "fail", provider: "none" };
+      }
+    }
+  }
+  return { verdict: "DoH blocked", ms: 0, kind: "fail", provider: "none" };
+}
+
+// Distinguishing "network refused the connection" from "connected but this is not
+// a WebSocket server" is not possible from the API, but the timing is a usable
+// proxy: a sub-150ms error smells like a local block or DNS failure, while a
+// multi-second error smells like a TCP connect followed by a protocol rejection.
+function probeWs(url) {
+  return new Promise((resolve) => {
+    const t0 = performance.now();
+    let settled = false;
+    const finish = (verdict, kind) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch { /* already closed */ }
+      resolve({ verdict, ms: elapsed(t0), kind });
+    };
+    const timer = setTimeout(() => finish("timeout", "slow"), TIMEOUT);
+    let socket;
+    try {
+      socket = new WebSocket(url);
+    } catch (error) {
+      return finish("ctor error", "fail");
+    }
+    socket.addEventListener("open", () => finish("open", "ok"));
+    socket.addEventListener("error", () => finish("error", elapsed(t0) < 150 ? "fail" : "slow"));
+  });
+}
+
+function summarise() {
+  const reach = (host) => results.https.find((r) => r.name === host);
+  const control = reach("cdn.jsdelivr.net");
+  const workers = results.https.filter((r) => r.name.includes("workers.dev"));
+  const wsOpen = results.ws.filter((r) => r.kind === "ok");
+  const wsControl = results.ws.find((r) => r.name.includes("postman-echo"));
+
+  const lines = [];
+  lines.push(`control cdn.jsdelivr.net: ${control ? control.verdict : "not run"}`);
+
+  const workersOk = workers.filter((r) => r.kind === "ok").length;
+  lines.push(`workers.dev reachable over HTTPS: ${workersOk}/${workers.length}`);
+  lines.push(`WebSocket opened: ${wsOpen.length ? wsOpen.map((r) => r.name).join(", ") : "none"}`);
+
+  if (!wsOpen.length) {
+    lines.push("");
+    lines.push("VERDICT: no WebSocket handshake completed anywhere, not even the control.");
+    lines.push("This stack has exactly one transport (epoxy, wisp over WebSocket). If no");
+    lines.push("WebSocket opens on this network, no wisp host, self-hosted or public, can fix");
+    lines.push("it. The block is on the WebSocket upgrade itself, not on the relay domain.");
+  } else if (!wsOpen.some((r) => r.name.includes("/wisp/"))) {
+    lines.push("");
+    lines.push("VERDICT: WebSockets work but no wisp relay answered. The relay host is blocked.");
+    lines.push("A relay on a host this network already reaches is the fix.");
+  } else {
+    lines.push("");
+    lines.push(`VERDICT: ${wsOpen.find((r) => r.name.includes("/wisp/")).name} completed a handshake.`);
+    lines.push("Point the transport at that relay.");
+  }
+
+  if (workersOk === 0 && workers.length) {
+    lines.push("");
+    lines.push("Note: no *.workers.dev host is reachable over HTTPS. Hosting a relay there");
+    lines.push("will not help; that domain is blocked before any WebSocket is attempted.");
+  }
+  if (wsControl && wsControl.kind === "ok") {
+    lines.push("");
+    lines.push("The control WebSocket opened, so the network permits WebSockets in general.");
+  }
+
+  document.getElementById("summary").textContent = lines.join("\n");
+}
+
+async function run() {
+  const runBtn = document.getElementById("run");
+  const status = document.getElementById("status");
+  runBtn.disabled = true;
+  for (const id of ["https", "doh", "ws"]) {
+    document.getElementById(id).tBodies[0].replaceChildren();
+  }
+  results.https.length = 0;
+  results.doh.length = 0;
+  results.ws.length = 0;
+
+  let done = 0;
+  const total = HTTPS_TARGETS.length + DNS_NAMES.length + WS_TARGETS.length;
+  const tick = () => { status.textContent = `${++done}/${total}`; };
+
+  // Rows are reserved up front so results appear in a stable order instead of
+  // popping in as each concurrent probe lands.
+  for (const [name, , note] of HTTPS_TARGETS) addRow("https", name, note, "…", 0, "dim").dataset.key = name;
+  for (const name of DNS_NAMES) addRow("doh", name, "", "…", 0, "dim").dataset.key = name;
+  for (const [name, note] of WS_TARGETS) addRow("ws", name, note, "…", 0, "dim").dataset.key = name;
+
+  const paint = (tableId, key, verdict, ms, cls) => {
+    const tr = [...document.getElementById(tableId).tBodies[0].rows].find((r) => r.dataset.key === key);
+    if (!tr) return;
+    tr.cells[2].textContent = verdict;
+    tr.cells[2].className = cls;
+    tr.cells[3].textContent = ms + " ms";
+  };
+
+  const jobs = [
+    ...HTTPS_TARGETS.map(async ([name, url, note]) => {
+      const r = await probeHttps(url);
+      results.https.push({ name, url, note, ...r });
+      paint("https", name, r.verdict, r.ms, r.kind);
+      tick();
+    }),
+    ...DNS_NAMES.map(async (name) => {
+      const r = await probeDoh(name);
+      results.doh.push({ name, ...r });
+      paint("doh", name, r.verdict, r.ms, r.kind);
+      tick();
+    }),
+    ...WS_TARGETS.map(async ([name, note]) => {
+      const r = await probeWs(name);
+      results.ws.push({ name, note, ...r });
+      paint("ws", name, r.verdict, r.ms, r.kind);
+      tick();
+    }),
+  ];
+
+  await Promise.all(jobs);
+
+  summarise();
+  status.textContent = "done";
+  runBtn.disabled = false;
+}
+
+document.getElementById("run").addEventListener("click", run);
+document.getElementById("copy").addEventListener("click", async () => {
+  const text = JSON.stringify(results, null, 2);
+  try {
+    await navigator.clipboard.writeText(text);
+    document.getElementById("status").textContent = "copied";
+  } catch {
+    document.getElementById("summary").textContent = text;
+  }
+});
+
+run();
+</script>
+</body>
+</html>
