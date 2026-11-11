@@ -1,10 +1,10 @@
-﻿/*global $scramjetLoadWorker*/
+/*global $scramjetLoadWorker*/
 // Served from a CDN subdirectory, so the bundle path is resolved against this
 // worker's own URL. A root-absolute "/scramjet/scramjet.all.js" 404s on a
 // jsDelivr or Pages subpath and the worker never installs.
 const DIR = new URL('./', self.location.href).href;
 
-importScripts(DIR + 'scramjet.all.js?v=24');
+importScripts(DIR + 'scramjet.all.js?v=25');
 
 const { ScramjetServiceWorker } = $scramjetLoadWorker();
 const scramjet = new ScramjetServiceWorker();
