@@ -337,6 +337,20 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // On Cloudflare Pages the advanced-mode worker sees every path first.
+    // Static files belong to the Pages asset binding; only relay routes are
+    // ours. Without this, /go/ and every .js file get the JSON root response.
+    // Engine URL space is intercepted by each proxy's service worker. If the
+    // host answers those paths with its SPA shell instead of a 404, the worker
+    // never gets the chance and the frame shows the hub instead of the site.
+    const PROXY_PREFIX = /^\/(scramjet\/sj\/|uv\/service\/)/;
+    if (env.ASSETS && PROXY_PREFIX.test(url.pathname)) {
+      return new Response(null, { status: 404 });
+    }
+    if (env.ASSETS && !/^\/(api|wisp|bare)(\/|$)/.test(url.pathname) && url.pathname !== "/health") {
+      return env.ASSETS.fetch(request);
+    }
+
     // Bare v3 is the TLS compatibility lane. Same host as the Wisp relay, so a
     // filter sees one additional path on a domain it already allows.
     if (url.pathname.startsWith("/bare/")) return bareRoute(request, env);

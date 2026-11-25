@@ -12,6 +12,10 @@ const dist = path.join(root, "dist");
 await rm(dist, { recursive: true, force: true });
 await mkdir(dist, { recursive: true });
 await cp(path.join(root, "public"), dist, { recursive: true });
-await copyFile(path.join(root, "worker.js"), path.join(dist, "_worker.js"));
+
+// Advanced-mode Pages worker: the same Wisp + Bare handler the Workers deploy
+// runs, with the bare.mjs module beside it so the relative import resolves.
+await copyFile(path.join(root, "relay", "worker.mjs"), path.join(dist, "_worker.js"));
+await copyFile(path.join(root, "relay", "bare.mjs"), path.join(dist, "bare.mjs"));
 
 console.log("pages: dist/ ready (public + _worker.js)");
