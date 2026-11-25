@@ -18,7 +18,7 @@ const SJ_FILES = {
 // A static CDN cannot terminate a proxy hop, so the Wisp relay is external.
 // Override per-device from Settings or localStorage when this host is filtered.
 const WISP_KEY = "af.go.wisp";
-const WISP_DEFAULT = "wss://anura.pro/wisp/";
+const WISP_DEFAULT = "wss://connection-wings-auto-trans.trycloudflare.com/wisp/";
 
 // Bare is the compatibility lane. Wisp + epoxy-tls does TLS inside a WASM Hyper
 // client; sites that fingerprint that stack answer with HTTP/2 resets or kill
@@ -28,8 +28,8 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // the default is the self-hosted Bare v3 on the same Worker as the Wisp relay.
 // The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
-const BARE_DEFAULT = "https://af-wisp-relay.jaay847.workers.dev/bare/";
-const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=2`;
+const BARE_DEFAULT = "https://connection-wings-auto-trans.trycloudflare.com/bare/";
+const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=5`;
 
 function readBareUrl() {
 	let stored = "";
@@ -38,6 +38,9 @@ function readBareUrl() {
 	} catch {
 		// storage blocked: use the pool
 	}
+	// Old saved hosts point at dead or rate-limited relays. Drop them so this
+	// build always lands on the tunnel unless the user deliberately sets one.
+	if (/af-wisp-relay\.jaay847|bare\.mercurywork|anura\.pro/i.test(stored)) stored = "";
 	return /^https?:\/\//i.test(stored) ? stored.replace(/\/+$/, "") + "/" : BARE_DEFAULT;
 }
 
@@ -59,6 +62,14 @@ function readBareUrl() {
 //
 // Shape: `mint` returns JSON, `token` names the field, `socket` builds the URL.
 const RELAY_MINTS = [
+	{
+		// Minted through our Worker because their mint demands a Referer from
+		// their own origin. The socket is still their public Wisp relay.
+		label: "desync-bridge",
+		mint: "https://af-wisp-relay.jaay847.workers.dev/api/dsync",
+		token: "s",
+		socket: (token) => `wss://desynctutoring.com/wisp/?s=${encodeURIComponent(token)}`,
+	},
 	{
 		label: "desynctutoring",
 		mint: "https://desynctutoring.com/api/session",
@@ -92,6 +103,7 @@ function readWispUrl() {
 	} catch {
 		// private mode / blocked storage: fall back to the default relay
 	}
+	if (/af-wisp-relay\.jaay847|anura\.pro|wisp\.mercurywork/i.test(stored)) stored = "";
 	return /^wss?:\/\//i.test(stored) ? stored : WISP_DEFAULT;
 }
 
@@ -1490,8 +1502,25 @@ function noteUrl(tab, next) {
 	settleLoad(tab);
 }
 
+// Some sites' HTML comes back without the proxy engine rebasing relative URLs.
+// The frame shares our origin, so we can install the base element ourselves —
+// otherwise "/assets/app.js" resolves against the hub and 404s.
+function injectBase(tab) {
+	if (!tab.url || !/^https?:/i.test(tab.url)) return;
+	try {
+		const doc = tab.frame.contentDocument;
+		if (!doc || !doc.head || doc.querySelector("base")) return;
+		const base = doc.createElement("base");
+		base.href = new URL("/", tab.url).href;
+		doc.head.prepend(base);
+	} catch {
+		// Cross-origin frame: the engine is handling rewriting itself.
+	}
+}
+
 function attachFrame(tab) {
 	tab.frame.addEventListener("load", () => {
+		injectBase(tab);
 		const next = decodeFrameUrl(tab);
 		if (!next) {
 			settleLoad(tab);
