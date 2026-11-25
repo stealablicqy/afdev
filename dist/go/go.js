@@ -227,7 +227,15 @@ const TRANSPORT_URL = asset("transport/epoxy.mjs");
 // self-hosted Bare server on the relay Worker fetches with Node TLS, so sites
 // that kill epoxy-tls's WASM handshake load on the first click. Wisp stays one
 // button away for sites that prefer the encrypted raw-socket path.
-let TRANSPORT_MODE = "bare";
+let TRANSPORT_MODE = /^wisp$/i.test(
+	(() => { try { return localStorage.getItem("af.go.mode") || ""; } catch { return ""; } })()
+) ? "wisp" : "bare";
+
+function persistTransportMode() {
+	try { localStorage.setItem("af.go.mode", TRANSPORT_MODE); } catch { /* private mode */ }
+	const button = document.getElementById("transportBtn");
+	if (button) button.textContent = TRANSPORT_MODE.toUpperCase();
+}
 
 // How long a frame gets to announce itself before the ladder moves on. Schools
 // drop blocked requests silently, so "no load event" is the common failure, not
@@ -969,6 +977,7 @@ async function resolveEndpoint() {
 			}
 		}
 		TRANSPORT_MODE = "wisp";
+		persistTransportMode();
 		WISP_URL = "wss://anura.pro/wisp/";
 		WISP_ROTATED = WISP_URL;
 		state.health.wisp = { state: "ok", note: "bare unreachable — public Wisp", url: "wss://anura.pro/wisp/", at: Date.now() };
@@ -2199,6 +2208,20 @@ function bindUi() {
 		event.preventDefault();
 		navigate(dom.homeInput.value);
 	});
+	// Bare = server-side TLS, Wisp = encrypted raw socket. Switch by choice,
+	// not by engine: the same lane works on both transports.
+	document.getElementById("transportBtn")?.addEventListener("click", async () => {
+		TRANSPORT_MODE = TRANSPORT_MODE === "bare" ? "wisp" : "bare";
+		persistTransportMode();
+		try {
+			await reseatTransport();
+			const tab = activeTab();
+			if (tab?.url) loadInTab(tab, tab.url, { keepHistory: true, forceEngine: tab.engine });
+			toast(TRANSPORT_MODE === "bare" ? "Bare transport" : "Wisp transport");
+		} catch (error) {
+			toast("Transport switch failed: " + String(error?.message || error));
+		}
+	});
 	dom.back.addEventListener("click", () => step(-1));
 	dom.forward.addEventListener("click", () => step(1));
 	dom.reload.addEventListener("click", () => {
@@ -2304,6 +2327,7 @@ async function boot() {
 	buildCloakMenu();
 	renderChrome();
 
+	persistTransportMode();
 	const overlay = bootOverlay();
 	setStatus("connecting", "busy");
 

@@ -102,6 +102,9 @@ function readBareResponse(response) {
 		headers: toObject(pairs),
 		status: status ? Number(status) : response.status,
 		statusText: statusText || response.statusText,
+		// Engines rebase relative URLs from response.url. Without it, "/assets/x"
+		// resolves against the proxy origin and every subresource 404s.
+		url: remote.href,
 	};
 }
 

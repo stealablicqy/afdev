@@ -995,3 +995,5 @@ body::after {
 	.chrome::after,
 	.chrome-word { animation: none !important; }
 }
+
+.transport-switch{min-height:30px;padding:0 12px;border:1px solid rgba(120,170,255,.35);border-radius:9px;background:rgba(120,170,255,.10);color:#bcd4ff;font:700 10px system-ui;letter-spacing:1.2px;cursor:pointer;transition:.18s}.transport-switch:hover{background:rgba(120,170,255,.2);border-color:rgba(120,170,255,.6);color:#fff}
