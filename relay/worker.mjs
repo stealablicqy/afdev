@@ -17,6 +17,7 @@
 // for a browsing session, not a seedbox tunnel.
 
 import { connect } from "cloudflare:sockets";
+import { bareRoute } from "./bare.mjs";
 
 const PACKET_CONNECT = 0x01;
 const PACKET_DATA = 0x02;
@@ -335,6 +336,11 @@ function json(body, status = 200) {
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+
+    // Bare v3 is the TLS compatibility lane. Same host as the Wisp relay, so a
+    // filter sees one additional path on a domain it already allows.
+    if (url.pathname.startsWith("/bare/")) return bareRoute(request, env);
+
     const secret = env.WISP_SECRET || "";
 
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });

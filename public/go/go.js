@@ -24,15 +24,12 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // client; sites that fingerprint that stack answer with HTTP/2 resets or kill
 // the handshake outright. Bare makes the hop from a real Node TLS stack, so the
 // same destination that errors on Wisp usually renders here. Public bare hosts
-// rotate, so the stored value wins and the pool is only a starting point.
+// rotate and die without notice (swept 2026-11-24: every public host was dead),
+// the default is the self-hosted Bare v3 on the same Worker as the Wisp relay.
+// The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
-const BARE_DEFAULT = "https://bare.mercurywork.shop/";
-const BARE_POOL = [
-	"https://bare.mercurywork.shop/",
-	"https://bare.iamalekk.com/",
-	"https://bare.kwiatekmiki.com/",
-];
-const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=1`;
+const BARE_DEFAULT = "https://af-wisp-relay.jaay847.workers.dev/bare/";
+const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=2`;
 
 function readBareUrl() {
 	let stored = "";
@@ -83,12 +80,9 @@ const RELAY_MINTS = [
 // handshake. The rest are kept as cheap probes because these hosts rotate back
 // online without notice, and a dead probe costs one timeout, not a session.
 const WISP_FALLBACKS = [
-	"wss://wisp.mercurywork.shop/",
-	"wss://wisp.egg.lol/",
-	"wss://wisp.birdcat.cafe/",
-	"wss://wisp.hydroxide.dev/",
-	"wss://wisp.quartz.rip/",
-	"wss://wisp.rhodes.rip/",
+	// Swept 2026-11-24: every other public relay in the old pool was dead.
+	// anura.pro was the only host that still completed a handshake.
+	"wss://anura.pro/wisp/",
 ];
 
 function readWispUrl() {
@@ -229,9 +223,11 @@ function relayDisplay(url) {
 const BAREMUX_WORKER = `${asset("baremux/worker.js")}?v=5`;
 const TRANSPORT_URL = asset("transport/epoxy.mjs");
 
-// Which backend the next setTransport() installs. Switched by the Bare lane and
-// by the auto-retry when Wisp's TLS stack gets reset by a destination.
-let TRANSPORT_MODE = "wisp";
+// Which backend the next setTransport() installs. Bare is the default: the
+// self-hosted Bare server on the relay Worker fetches with Node TLS, so sites
+// that kill epoxy-tls's WASM handshake load on the first click. Wisp stays one
+// button away for sites that prefer the encrypted raw-socket path.
+let TRANSPORT_MODE = "bare";
 
 // How long a frame gets to announce itself before the ladder moves on. Schools
 // drop blocked requests silently, so "no load event" is the common failure, not
@@ -302,7 +298,7 @@ function readRhBase() {
 
 let RH_BASE = readRhBase();
 
-const ENGINE_ORDER = ["ultraviolet", "bare", "scramjet"];
+const ENGINE_ORDER = ["bare", "ultraviolet", "scramjet"];
 const ENGINE_LABEL = {
 	scramjet: "Scramjet",
 	ultraviolet: "Ultraviolet",
@@ -2237,12 +2233,16 @@ async function boot() {
 	// The transport binds its relay once, so a dead primary has to be replaced
 	// before the worker starts — rotating afterwards leaves every engine pointed
 	// at a socket that never opened.
-	try {
-		stage("wisp:begin");
-		await resolveWispFast();
-		stage("wisp:done", new URL(WISP_URL).host);
-	} catch (error) {
-		stage("wisp:failed", String(error?.message || error));
+	// Bare needs no Wisp socket. Probing the public relay pool on the default
+	// lane only burns seconds on hosts that are already dead.
+	if (TRANSPORT_MODE !== "bare") {
+		try {
+			stage("wisp:begin");
+			await resolveWispFast();
+			stage("wisp:done", new URL(WISP_URL).host);
+		} catch (error) {
+			stage("wisp:failed", String(error?.message || error));
+		}
 	}
 
 	let transportError = null;
