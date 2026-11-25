@@ -29,7 +29,7 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
 const BARE_DEFAULT = "https://af-wisp-relay.jaay847.workers.dev/bare/";
-const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=3`;
+const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=4`;
 
 function readBareUrl() {
 	let stored = "";
