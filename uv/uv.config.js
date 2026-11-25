@@ -26,22 +26,27 @@
   // subpath turns those into real slashes while the worker decodes, collapsing
   // "https://" into "https:/" and 404ing the destination. base64url has no
   // slash to collapse.
+  // Rotating XOR before base64url: slash-free and not a plain base64 URL.
   function encodeUrl(text) {
     if (!text) return text;
+    var key = [0x5a, 0x3c, 0x6f, 0x21, 0x9b];
     var bytes = new TextEncoder().encode(String(text));
+    var out = new Uint8Array(bytes.length);
+    for (var i = 0; i < bytes.length; i += 1) out[i] = bytes[i] ^ key[i % 5];
     var raw = '';
-    for (var i = 0; i < bytes.length; i += 1) raw += String.fromCharCode(bytes[i]);
+    for (var j = 0; j < out.length; j += 1) raw += String.fromCharCode(out[j]);
     return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
   }
 
   function decodeUrl(text) {
     if (!text) return text;
+    var key = [0x5a, 0x3c, 0x6f, 0x21, 0x9b];
     var raw = String(text).replace(/-/g, '+').replace(/_/g, '/');
     var padded = raw + '='.repeat((4 - (raw.length % 4)) % 4);
     var binary = atob(padded);
-    var bytes = new Uint8Array(binary.length);
-    for (var i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-    return new TextDecoder().decode(bytes);
+    var out = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i) ^ key[i % 5];
+    return new TextDecoder().decode(out);
   }
 
   var dir = uvDir();                        // absolute, ends with "/uv/"
