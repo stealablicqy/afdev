@@ -27,6 +27,10 @@ const CORS = {
 const HOP = new Set([
   "host", "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
   "te", "trailer", "transfer-encoding", "upgrade", "content-length",
+  // Browser-only headers. Workers rejects or mutates some of these, and they
+  // describe the hop to the Bare server, never the hop to the destination.
+  "accept-encoding", "origin", "referer", "sec-fetch-dest", "sec-fetch-mode",
+  "sec-fetch-site", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
 ]);
 
 function json(body, status = 200) {
@@ -85,6 +89,16 @@ function publicHost(host) {
 }
 
 async function bareFetch(request, url) {
+  try {
+    return await doBareFetch(request);
+  } catch (error) {
+    // A generic Worker 500 gives the client nothing to work with. Surface the
+    // exception as a JSON body so the next browser run names the exact fault.
+    return json({ code: "BARE_EXCEPTION", message: String(error?.message || error) }, 500);
+  }
+}
+
+async function doBareFetch(request) {
   const destination = request.headers.get("x-bare-url");
   if (!destination) return json({ code: "MISSING_BARE_URL", message: "no x-bare-url" }, 400);
 
@@ -104,7 +118,10 @@ async function bareFetch(request, url) {
   const init = {
     method,
     headers: cleanHeaders(joinHeaders(request.headers)),
-    redirect: "manual",
+    // Follow bounded redirects here. Bare clients disagree on how to handle a
+    // proxied 301, and a first hop like youtube.com -> www.youtube.com would
+    // otherwise land the proxy on a redirect it cannot finish.
+    redirect: "follow",
   };
   if (method !== "GET" && method !== "HEAD") init.body = request.body;
 
