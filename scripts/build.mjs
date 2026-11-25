@@ -34,6 +34,7 @@ const manfest = [
 	[path.join(epoxyDist, "index.mjs"), pub("transport", "epoxy-client.mjs")],
 
 	[src("transport", "epoxy.mjs"), pub("transport", "epoxy.mjs")],
+	[src("transport", "bare.mjs"), pub("transport", "bare.mjs")],
 
 	[src("uv", "uv.config.js"), pub("uv", "uv.config.js")],
 	[src("uv", "sw.js"), pub("uv", "sw.js")],
@@ -65,7 +66,7 @@ console.log(`\n${sizeReport}`);
 // Fail loudly if a copied module accidentally kept a bare import — bare-mux
 // dynamic-imports these inside a SharedWorker where there is no specifier
 // resolution beyond the URL itself.
-const checked = [pub("transport", "epoxy.mjs"), pub("transport", "epoxy-client.mjs")];
+const checked = [pub("transport", "epoxy.mjs"), pub("transport", "epoxy-client.mjs"), pub("transport", "bare.mjs")];
 for (const file of checked) {
 	const text = await readFile(file, "utf8");
 	const bare = [...text.matchAll(/(?:from|import)\s*["']([^"'./][^"']*)["']/g)]

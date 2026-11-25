@@ -20,6 +20,30 @@ const SJ_FILES = {
 const WISP_KEY = "af.go.wisp";
 const WISP_DEFAULT = "wss://anura.pro/wisp/";
 
+// Bare is the compatibility lane. Wisp + epoxy-tls does TLS inside a WASM Hyper
+// client; sites that fingerprint that stack answer with HTTP/2 resets or kill
+// the handshake outright. Bare makes the hop from a real Node TLS stack, so the
+// same destination that errors on Wisp usually renders here. Public bare hosts
+// rotate, so the stored value wins and the pool is only a starting point.
+const BARE_KEY = "af.go.bare";
+const BARE_DEFAULT = "https://bare.mercurywork.shop/";
+const BARE_POOL = [
+	"https://bare.mercurywork.shop/",
+	"https://bare.iamalekk.com/",
+	"https://bare.kwiatekmiki.com/",
+];
+const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=1`;
+
+function readBareUrl() {
+	let stored = "";
+	try {
+		stored = localStorage.getItem(BARE_KEY) || "";
+	} catch {
+		// storage blocked: use the pool
+	}
+	return /^https?:\/\//i.test(stored) ? stored.replace(/\/+$/, "") + "/" : BARE_DEFAULT;
+}
+
 // Category filters block by hostname, not by protocol. A relay on a domain that
 // reads as an ordinary site survives where `wisp.<something>.dev` gets filed
 // under "proxy" and dropped. These entries are tokened relays: the host mints a
@@ -205,6 +229,10 @@ function relayDisplay(url) {
 const BAREMUX_WORKER = `${asset("baremux/worker.js")}?v=5`;
 const TRANSPORT_URL = asset("transport/epoxy.mjs");
 
+// Which backend the next setTransport() installs. Switched by the Bare lane and
+// by the auto-retry when Wisp's TLS stack gets reset by a destination.
+let TRANSPORT_MODE = "wisp";
+
 // How long a frame gets to announce itself before the ladder moves on. Schools
 // drop blocked requests silently, so "no load event" is the common failure, not
 // an error page.
@@ -274,11 +302,11 @@ function readRhBase() {
 
 let RH_BASE = readRhBase();
 
-const ENGINE_ORDER = ["ultraviolet", "rammerhead", "scramjet"];
+const ENGINE_ORDER = ["ultraviolet", "bare", "scramjet"];
 const ENGINE_LABEL = {
 	scramjet: "Scramjet",
 	ultraviolet: "Ultraviolet",
-	rammerhead: "Rammerhead",
+	bare: "Bare",
 };
 
 // `!sj site.com` forces a lane for one navigation. Shorthand resolves to the
@@ -290,9 +318,8 @@ const ENGINE_ALIAS = {
 	uv: "ultraviolet",
 	ultra: "ultraviolet",
 	ultraviolet: "ultraviolet",
-	rh: "rammerhead",
-	rhm: "rammerhead",
-	rammerhead: "rammerhead",
+	bare: "bare",
+	compat: "bare",
 	auto: null,
 };
 
@@ -527,7 +554,7 @@ function forgetMemory() {
 /* ---------------------------------------------------------------- engines */
 
 function isEngineUsable(engine) {
-	if (engine === "rammerhead") return Boolean(state.rammerhead?.origin || RH_BASE);
+	if (engine === "bare") return Boolean(readBareUrl()) && Boolean(state.engines.scramjet);
 	return Boolean(state.engines[engine]);
 }
 
@@ -570,17 +597,9 @@ function engineFor(url) {
 }
 
 function proxyUrl(tab, url) {
-	if (tab.engine === "scramjet") return SJ_PREFIX + encodeURIComponent(url);
+	if (tab.engine === "scramjet" || tab.engine === "bare") return SJ_PREFIX + encodeURIComponent(url);
 	if (tab.engine === "ultraviolet") {
 		return UV_PREFIX + globalThis.Ultraviolet.codec.xor.encode(url);
-	}
-	if (tab.engine === "rammerhead") {
-		// A remote server mints its own session from the bare URL form and
-		// redirects into it, so no cross-origin session call is needed.
-		const base = tab.rhSession?.origin || RH_BASE;
-		if (!base) return null;
-		if (tab.rhSession?.id) return `${base}/${tab.rhSession.id}/${url}`;
-		return `${base}/${url}`;
 	}
 	return null;
 }
@@ -696,25 +715,18 @@ async function probeEngine(engine) {
 		return { state: "bad", note: "not registered", ms: 0, at: Date.now() };
 	}
 
-	if (engine === "scramjet") {
+	if (engine === "scramjet" || engine === "bare") {
 		if (!state.controller) {
 			return { state: "bad", note: "controller not ready", ms: took(), at: Date.now() };
 		}
-		return { state: "ok", note: "controller ready", ms: took(), at: Date.now() };
-	}
-
-	// Rammerhead answers a HEAD on its own origin. A remote server that is not
-	// reachable is still a configured lane, so the note names which case it is.
-	if (engine === "rammerhead") {
-		const base = state.rammerhead?.origin || RH_BASE;
-		if (!base) {
-			return { state: "bad", note: "no server", ms: took(), at: Date.now() };
+		if (engine === "scramjet") {
+			return { state: "ok", note: "controller ready", ms: took(), at: Date.now() };
 		}
 		try {
-			await withTimeout(fetch(`${base}/`, { method: "HEAD", mode: "no-cors" }), 6000, "rh probe");
-			return { state: "ok", note: "server answers", ms: took(), at: Date.now() };
+			await withTimeout(fetch(`${readBareUrl()}v3/`, { cache: "no-store" }), 6000, "bare probe");
+			return { state: "ok", note: "bare server answers", ms: took(), at: Date.now() };
 		} catch {
-			return { state: "bad", note: "server unreachable", ms: took(), at: Date.now() };
+			return { state: "bad", note: "bare server unreachable", ms: took(), at: Date.now() };
 		}
 	}
 
@@ -903,6 +915,35 @@ async function initTransport() {
 	// assets loses the worker's reply often enough to be worth a retry, and a
 	// cache-busted worker path is the only way to get a fresh SharedWorker.
 	const attempts = [BAREMUX_WORKER, `${BAREMUX_WORKER}&retry=${Date.now()}`];
+
+	// Bare needs no Wisp socket: the server fetches the destination itself. The
+	// whole mint + probe ladder below is skipped so a dead public relay cannot
+	// hold up a lane that never touches it.
+	if (TRANSPORT_MODE === "bare") {
+		const bare = readBareUrl().replace(/\/+$/, "");
+		let lastError = null;
+		for (const workerPath of attempts) {
+			try {
+				state.connection = new BareMuxConnection(workerPath);
+				mark("baremux:connection");
+				await withTimeout(
+					state.connection.setTransport(BARE_TRANSPORT, [{ bare }]),
+					12000,
+					"setTransport bare"
+				);
+				mark("baremux:set bare");
+				const used = await withTimeout(state.connection.getTransport(), 5000, "getTransport");
+				mark("baremux:get " + used);
+				state.health.wisp = { state: "ok", note: "bare transport", url: bare, at: Date.now() };
+				return used;
+			} catch (error) {
+				lastError = error;
+				console.warn("bare transport attempt failed:", error?.message || error);
+			}
+		}
+		throw lastError || new Error("bare transport unavailable");
+	}
+
 	// A tokened relay expires: the token carries its mint timestamp. Every seat,
 	// including a re-seat after a dropped socket, trades it for a fresh one so a
 	// long-lived tab does not come back to a relay that rejects its credential.
@@ -1173,7 +1214,7 @@ function applySource(tab, url) {
 	const target = proxyUrl(tab, url);
 	tab.loadToken = (tab.loadToken || 0) + 1;
 
-	if (tab.engine === "scramjet") {
+	if (tab.engine === "scramjet" || tab.engine === "bare") {
 		if (!tab.sjFrame) attachFrame(tab);
 		if (tab.sjFrame) {
 			tab.sjFrame.go(url);
@@ -1220,19 +1261,6 @@ function loadInTab(tab, url, options) {
 	rememberVisit(url);
 
 	const run = () => {
-		if (tab.engine === "rammerhead" && !tab.rhSession) {
-			armWatchdog(tab);
-			ensureRammerheadSession(tab)
-				.then(() => {
-					if (tab.url !== url || tab.engine !== "rammerhead") return;
-					applySource(tab, url);
-				})
-				.catch((error) => {
-					console.warn("rammerhead session failed:", error?.message || error);
-					failover(tab, "session");
-				});
-			return;
-		}
 		applySource(tab, url);
 		armWatchdog(tab);
 	};
@@ -1332,7 +1360,7 @@ function decodeFrameUrl(tab) {
 	}
 	if (!href || href === "about:blank") return "";
 
-	if (tab.engine === "scramjet") {
+	if (tab.engine === "scramjet" || tab.engine === "bare") {
 		const prefix = location.origin + SJ_PREFIX;
 		if (!href.startsWith(prefix)) return "";
 		try {
@@ -1398,7 +1426,7 @@ function attachFrame(tab) {
 		noteUrl(tab, next);
 	});
 
-	if (tab.engine !== "scramjet" || !state.controller) return;
+	if ((tab.engine !== "scramjet" && tab.engine !== "bare") || !state.controller) return;
 	tab.sjFrame = state.controller.createFrame(tab.frame);
 	tab.sjFrame.addEventListener("urlchange", (event) => {
 		if (!event.url || event.url === tab.url) return;
@@ -1515,10 +1543,9 @@ function renderEngines() {
 	dom.engine.replaceChildren();
 	for (const engine of ENGINE_ORDER) {
 		const usable = isEngineUsable(engine);
-		// Rammerhead is always listed: it is a server-side lane, so "missing a
-		// server" is a configuration state the user can fix, not a dead engine
-		// that should vanish from the bar.
-		if (!usable && engine !== "rammerhead") continue;
+		// Bare stays visible with a config hint: a rotated public host is a
+		// settings state, not a dead engine that should disappear from the bar.
+		if (!usable && engine !== "bare") continue;
 		const button = document.createElement("button");
 		const on = engine === current;
 		button.className = `engine-btn${on ? " is-active" : ""}${usable ? "" : " is-unavailable"}`;
@@ -1526,7 +1553,7 @@ function renderEngines() {
 		button.setAttribute("role", "tab");
 		button.setAttribute("aria-selected", String(on));
 		button.setAttribute("aria-disabled", String(!usable));
-		if (!usable) button.title = "Add a Rammerhead server in Settings to enable this lane";
+		if (!usable) button.title = "Set a Bare server in Settings to enable this lane";
 		button.textContent = ENGINE_LABEL[engine];
 		dom.engine.appendChild(button);
 	}
@@ -1607,6 +1634,7 @@ function setTabEngine(tab, engine, options) {
 
 	clearTimeout(tab.watchdog);
 	tab.engine = engine;
+	TRANSPORT_MODE = engine === "bare" ? "bare" : "wisp";
 	tab.manualEngine = opts.manual ? engine : null;
 	tab.sjFrame = null;
 	tab.retries = 0;
@@ -1642,6 +1670,40 @@ function failover(tab, reason) {
 	clearTimeout(tab.watchdog);
 	const host = safeHost(tab.url);
 	state.lastError = `${reason} · ${tab.engine}`;
+
+	// The Wasm TLS stack is what the Hyper errors come from. Retry the same URL
+	// through a Bare server once before burning an engine, because the engine is
+	// fine and only its transport was refused. One attempt per tab: a destination
+	// that fails on both stacks is a real dead end and falls through below.
+	const transportFault = /tls|handshake|hyper|protocol|reset|eof|http2|timeout|timed out/i.test(
+		String(reason || "")
+	);
+	if (transportFault && TRANSPORT_MODE === "wisp" && !tab.bareTried && isEngineUsable("bare")) {
+		tab.bareTried = true;
+		TRANSPORT_MODE = "bare";
+		state.lastError = `${reason} · retried over Bare`;
+		if (tab === activeTab()) setStatus("retrying · Bare transport", "busy");
+		tab.loadToken = (tab.loadToken || 0) + 1;
+		tab.sjFrame = null;
+		tab.retries = 0;
+		tab.frame.remove();
+		const frame = createFrameElement();
+		tab.host.appendChild(frame);
+		tab.frame = frame;
+		attachFrame(tab);
+		reseatTransport().then(
+			() => {
+				if (tab.url) loadInTab(tab, tab.url, { keepHistory: true, forceEngine: tab.engine });
+			},
+			(error) => {
+				console.warn("bare retry failed:", error?.message || error);
+				TRANSPORT_MODE = "wisp";
+				if (tab.url) loadInTab(tab, tab.url, { keepHistory: true, forceEngine: tab.engine });
+			}
+		);
+		return;
+	}
+
 	healthVerdict(tab.engine, "bad", reason);
 	if (host) {
 		const failed = (state.siteFail[host] ||= []);
@@ -2057,7 +2119,7 @@ function bindUi() {
 	dom.reload.addEventListener("click", () => {
 		const tab = activeTab();
 		if (!tab || !tab.url) return;
-		if (tab.engine === "scramjet" && tab.sjFrame) tab.sjFrame.reload();
+		if ((tab.engine === "scramjet" || tab.engine === "bare") && tab.sjFrame) tab.sjFrame.reload();
 		else loadInTab(tab, tab.url, { keepHistory: true });
 	});
 	dom.homeBtn.addEventListener("click", goHome);

@@ -1,0 +1,10 @@
+name = "af-wisp-relay"
+main = "worker.mjs"
+compatibility_date = "2026-11-01"
+workers_dev = true
+
+[observability]
+enabled = true
+
+[vars]
+WISP_SECRET = "2f9c71d4a8e35b06c1d7e4f8a92b6c03d5e1a740b8c29f6d31a4e875c0b9d2f6"
