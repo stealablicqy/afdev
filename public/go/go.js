@@ -1185,7 +1185,7 @@ async function initScramjet() {
 			// them inside the service worker.
 			codec: { encode: sjEncode, decode: sjDecode },
 			flags: {
-				serviceworkers: false,
+				serviceworkers: true,
 				syncxhr: false,
 				strictRewrites: true,
 				rewriterLogs: false,
