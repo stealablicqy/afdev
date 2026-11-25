@@ -5,7 +5,7 @@ body[data-route="music"] .sidebar,body[data-route="music"] .topbar,body[data-rou
 body[data-route="music"] .main-column{margin-left:0;min-height:100vh}
 body[data-route="music"] .view-root{max-width:none;padding:0;margin:0;min-height:100vh}
 body[data-route="music"] .mini-player{left:60px;right:0;bottom:0;border-radius:0;border-left:1px solid rgba(255,255,255,.08);border-right:0;border-bottom:0}
-.afm-music-app{display:grid;grid-template-columns:60px 250px minmax(0,1fr);min-height:100vh;background:#050505;color:#f7f7f7;font-family:Inter,system-ui,sans-serif;padding-bottom:84px}
+.afm-music-app{display:grid;grid-template-columns:60px 250px minmax(0,1fr);min-height:100vh;background:#050505;color:#f7f7f7;font-family:Inter,system-ui,sans-serif;padding-bottom:96px}
 .afm-music-rail{position:sticky;top:0;height:100vh;display:flex;flex-direction:column;align-items:center;gap:8px;padding:13px 7px;border-right:1px solid #202020;background:#070707}
 .afm-rail-logo{width:38px;height:38px;margin-bottom:13px;display:grid;place-items:center;border-radius:12px;background:linear-gradient(145deg,#ff4a5b,#9d1227);color:white;text-decoration:none;font-size:12px;font-weight:900;letter-spacing:-1px}
 .afm-music-rail button{width:42px;height:42px;border:0;border-radius:13px;background:transparent;color:#898989;font-size:21px;cursor:pointer;transition:.15s}

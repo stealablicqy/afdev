@@ -2,7 +2,26 @@
   'use strict';
   const U = window.AFUtil;
   const audio = document.getElementById('audioEngine');
-  const API = '/api/music';
+  // The hub is served straight from the CDN, so there is no server to proxy
+  // through. Every provider below is called directly and sends ACAO: *.
+  const AUDIUS = 'https://api.audius.co/v1';
+  const ITUNES = 'https://itunes.apple.com';
+  const APP_NAME = 'AFGameHub';
+  // Piped mirrors are the catalogue: their search endpoint is CORS-open and
+  // returns YouTube video ids plus real durations, which the hidden IFrame
+  // player below turns into full-length playback. Order matters — the first
+  // mirror that answers wins and is cached for the session.
+  const PIPED_APIS = [
+    'https://api.piped.private.coffee',
+    'https://pipedapi.leptons.xyz',
+    'https://pipedapi.reallyaweso.me',
+    'https://pipedapi.adminforge.de',
+    'https://pipedapi.kavin.rocks',
+    'https://piped-api.privacy.com.de',
+    'https://pipedapi.darkness.services',
+    'https://pipedapi.nosebs.ru'
+  ];
+  let pipedBase = '';
   let view = 'browse';
   let currentTrack = null;
   let queue = [];
@@ -16,7 +35,7 @@
   let artistMode = null;
   let lastError = '';
   const trackCache = new Map();
-  const LYRICS_API = '/api/lyrics';
+  const LYRICS_API = 'https://lrclib.net/api';
   let lyricsOpen = false;
   let lyrics = null;
   let lyricsLoading = false;
@@ -35,6 +54,22 @@
   const getHistory = () => AFStore.get('musicHistory', []);
   const esc = value => U.esc(value ?? '');
 
+  function audiusStream(id) {
+    return `${AUDIUS}/tracks/${encodeURIComponent(id)}/stream?app_name=${APP_NAME}`;
+  }
+  // The Audius API returns `stream` as an object on some endpoints and a string
+  // on others. Anything that is not an absolute http(s) URL cannot be assigned
+  // to HTMLMediaElement.src — it stringifies to "[object Object]" and the
+  // element fails with MEDIA_ERR_SRC_NOT_SUPPORTED.
+  const isHttpUrl = (value) => typeof value === 'string' && /^https?:\/\//i.test(value.trim());
+  function streamFor(track) {
+    if (!track) return '';
+    if (isHttpUrl(track.stream)) return track.stream.trim();
+    const id = String(track.id || '');
+    if (id.startsWith('yt:') || id.startsWith('itunes:')) return '';
+    return id ? audiusStream(id) : '';
+  }
+
   function normalize(raw) {
     const user = raw.user || raw.user_data || {};
     const art = raw.artwork || raw.cover_art || {};
@@ -43,33 +78,185 @@
     const artist = String(raw.artist || raw.artist_name || user.name || user.handle || 'Unknown artist').slice(0,120);
     const permalink = raw.permalink || raw.url || (raw.slug ? `https://audius.co/${raw.slug}` : 'https://audius.co/');
     const artwork = typeof art === 'string' ? art : (art._480x480 || art._1000x1000 || art._150x150 || raw.artwork_url || '');
+    const isItunes = id.startsWith('itunes:');
     const track = {
       id, title, artist, artistId: String(user.id || raw.user_id || raw.artistId || ''), artistHandle: String(user.handle || raw.artistHandle || ''),
       artwork, duration: Number(raw.duration || 0), genre: String(raw.genre || ''),
       playCount: Number(raw.play_count ?? raw.playCount ?? 0), permalink,
+      stream: isHttpUrl(raw.stream) ? raw.stream.trim() : (isItunes ? '' : audiusStream(id)),
       isStreamable: raw.is_streamable !== false && raw.isStreamable !== false && String(raw.is_streamable ?? raw.isStreamable ?? 'true') !== 'false',
       isStreamGated: raw.is_stream_gated === true || raw.isStreamGated === true,
       parentalWarningType: String(raw.parental_warning_type || raw.parentalWarningType || '').toLowerCase(),
       description: String(raw.description || '').slice(0,1200),
-      source: 'Audius'
+      source: raw.source || (isItunes ? 'Preview clip' : 'Audius')
     };
     return track;
   }
+  // Apple's Search API covers the mainstream catalog that Audius does not:
+  // full studio releases with a 30 second preview. `itunes:` keeps the two
+  // namespaces apart in storage and in the queue.
+  function normalizeItunes(raw) {
+    if (!raw || raw.wrapperType !== 'track' || raw.kind !== 'song') return null;
+    const preview = String(raw.previewUrl || '');
+    if (!preview) return null;
+    const art = String(raw.artworkUrl100 || raw.artworkUrl60 || '');
+    return {
+      id: `itunes:${raw.trackId}`,
+      title: String(raw.trackName || 'Untitled track').slice(0, 180),
+      artist: String(raw.artistName || 'Unknown artist').slice(0, 120),
+      artistId: `itunes:${raw.artistId || ''}`,
+      artistHandle: '',
+      artwork: art ? art.replace(/\/\d+x\d+bb\.(jpg|png)$/i, '/600x600bb.$1') : '',
+      duration: Math.max(0, Math.round(Number(raw.trackTimeMillis || 0) / 1000)),
+      genre: String(raw.primaryGenreName || 'Song'),
+      playCount: 0,
+      permalink: String(raw.trackViewUrl || 'https://music.apple.com/'),
+      stream: preview,
+      isStreamable: true,
+      isStreamGated: false,
+      parentalWarningType: String(raw.trackExplicitness === 'explicit' ? 'explicit' : 'none'),
+      description: `${raw.collectionName ? `${raw.collectionName}. ` : ''}30 second Preview clip. Full track opens in Apple Music.`,
+      source: 'Preview clip'
+    };
+  }
+  function pipedBases() {
+    let cached = '';
+    try { cached = localStorage.getItem('af.music.piped') || ''; } catch {}
+    const list = PIPED_APIS.slice();
+    const first = cached || pipedBase;
+    if (first && list.includes(first)) {
+      return [first, ...list.filter(base => base !== first)];
+    }
+    return list;
+  }
+
+  function parseDurationLabel(value) {
+    if (typeof value === 'number') return value;
+    const text = String(value || '');
+    const parts = text.split(':').map(Number);
+    if (parts.some(n => !Number.isFinite(n))) return 0;
+    return parts.reduce((total, n) => total * 60 + n, 0);
+  }
+
+  // Piped search rows are flat objects, not Audius payloads. The video id lives
+  // in `url` as /watch?v=…; `yt:` keeps that namespace separate from Audius ids
+  // in storage, favourites and the queue.
+  function normalizePiped(raw) {
+    if (!raw || raw.type !== 'stream') return null;
+    const url = String(raw.url || '');
+    const videoId = (url.match(/[?&]v=([A-Za-z0-9_-]{11})/) || [])[1]
+      || (String(raw.id || '').match(/([A-Za-z0-9_-]{11})$/) || [])[1]
+      || '';
+    if (!videoId) return null;
+    const title = String(raw.title || 'Untitled track').slice(0, 180);
+    if (!title || /^\[?(deleted|private) video\]?$/i.test(title)) return null;
+    const uploader = String(raw.uploaderName || raw.uploader || 'YouTube').replace(/\s*-\s*Topic$/i, '').trim();
+    const art = String(raw.thumbnail || '');
+    return {
+      id: `yt:${videoId}`,
+      title,
+      artist: uploader || 'YouTube',
+      artistId: `yt:${uploader}`,
+      artistHandle: '',
+      artwork: art.startsWith('http') ? art : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+      duration: parseDurationLabel(raw.duration),
+      genre: String(raw.category || 'Song'),
+      playCount: Number(raw.views || 0),
+      permalink: `https://www.youtube.com/watch?v=${videoId}`,
+      stream: `yt:${videoId}`,
+      isStreamable: true,
+      isStreamGated: false,
+      parentalWarningType: '',
+      description: 'Full length audio, played through the embedded YouTube player.',
+      source: 'YouTube'
+    };
+  }
+
+  async function pipedSearch(query, limit = 25) {
+    const term = String(query || '').trim();
+    if (!term) return [];
+    for (const base of pipedBases()) {
+      try {
+        const data = await fetchJson(`${base}/search?q=${encodeURIComponent(term)}&filter=music_songs`);
+        const rows = Array.isArray(data?.items) ? data.items : [];
+        const tracks = rows.map(normalizePiped).filter(Boolean);
+        if (tracks.length) {
+          pipedBase = base;
+          try { localStorage.setItem('af.music.piped', base); } catch {}
+          return tracks.slice(0, limit);
+        }
+      } catch {
+        // Dead mirror — fall through to the next one.
+      }
+    }
+    return [];
+  }
+
   function remember(track) {
     if (!track?.id) return;
     trackCache.set(track.id, track);
   }
   function allowed(track) {
-    if (!track || !track.id || !track.isStreamable || track.isStreamGated) return false;
-    if (track.parentalWarningType && !['none','clean',''].includes(track.parentalWarningType)) return false;
-    return true;
+    // Nothing is filtered any more: every result plays. Explicit tracks,
+    // gated Audius uploads and YouTube rows all stream at full length.
+    return !!(track && track.id);
   }
-  async function api(path, options={}) {
-    const response = await fetch(`${API}${path}`, {headers:{Accept:'application/json'}, cache:'no-store', ...options});
-    const data = await response.json().catch(()=>({}));
-    if (!response.ok) throw new Error(data.error || `Music service returned HTTP ${response.status}.`);
-    return data;
+  async function fetchJson(url) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    try {
+      const response = await fetch(url, { headers: { Accept: 'application/json' }, cache: 'no-store', signal: controller.signal });
+      const text = await response.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : {}; } catch { throw new Error('The music service returned an unreadable response.'); }
+      if (!response.ok) throw new Error(data?.error || `Music service returned HTTP ${response.status}.`);
+      return data;
+    } catch (error) {
+      if (error?.name === 'AbortError') throw new Error('The music service took too long to answer.');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
   }
+  async function audiusSearch(query, limit = 30) {
+    const data = await fetchJson(`${AUDIUS}/tracks/search?query=${encodeURIComponent(query)}&limit=${limit}&app_name=${APP_NAME}`);
+    return (data.data || []).map(normalize).filter(allowed);
+  }
+  async function audiusTrending(limit = 40) {
+    const data = await fetchJson(`${AUDIUS}/tracks/trending?time=week&limit=${limit}&app_name=${APP_NAME}`);
+    return (data.data || []).map(normalize).filter(allowed);
+  }
+  async function itunesSearch(query, limit = 25) {
+    const data = await fetchJson(`${ITUNES}/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=${limit}&country=US`);
+    return (data.results || []).map(normalizeItunes).filter(Boolean);
+  }
+  // Rotating seed list so the "popular" shelf changes day to day instead of
+  // hammering the same six artists forever.
+  const POPULAR_ARTISTS = ['Drake','Taylor Swift','The Weeknd','SZA','Kendrick Lamar','Bad Bunny','Billie Eilish','Post Malone','Ariana Grande','Travis Scott','Doja Cat','Tyler, The Creator','Olivia Rodrigo','Future','21 Savage','Sabrina Carpenter','Metro Boomin','Rihanna','Kanye West','Playboi Carti','Don Toliver','Lil Baby','Brent Faiyaz','Frank Ocean'];
+  function popularSeeds(count = 6) {
+    const day = Math.floor(Date.now() / 86400000);
+    const seeds = [];
+    for (let i = 0; i < count; i += 1) seeds.push(POPULAR_ARTISTS[(day * count + i) % POPULAR_ARTISTS.length]);
+    return seeds;
+  }
+  function dedupe(tracks) {
+    const seen = new Set();
+    return tracks.filter(track => {
+      if (!track?.id) return false;
+      const key = `${String(track.title).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}|${String(track.artist).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+  async function popularTracks() {
+    const seeds = popularSeeds(6);
+    const batches = await Promise.allSettled(seeds.map(name => pipedSearch(name, 8)));
+    const merged = [];
+    for (const batch of batches) if (batch.status === 'fulfilled') merged.push(...batch.value);
+    return dedupe(merged);
+  }
+
   function artwork(track, className='') {
     const source = track.artwork ? `<img src="${esc(track.artwork)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '<span class="afm-art-fallback">♫</span>';
     return `<div class="afm-art ${className}">${source}</div>`;
@@ -110,7 +297,7 @@
     return `<div class="afm-library-actions"><button data-action="music-view" data-id="browse" class="${view==='browse'?'active':''}"><span>◉</span> Discover</button><button data-action="music-view" data-id="artists" class="${view==='artists'?'active':''}"><span>◍</span> Artists</button><button data-action="music-view" data-id="library" class="${view==='library'?'active':''}"><span>▤</span> Library</button><button data-action="music-view" data-id="favorites" class="${view==='favorites'?'active':''}"><span>♥</span> Liked Songs <small>${getFavorites().length}</small></button></div>
       <div class="afm-playlist-heading"><span>YOUR PLAYLISTS</span><button data-action="music-create-playlist" title="Create playlist">＋</button></div>
       <div class="afm-playlists">${lists.map(p=>`<button class="${view==='playlist'&&currentPlaylistId===p.id?'active':''}" data-action="music-playlist" data-id="${esc(p.id)}">♫ ${esc(p.name)} <small>${(p.trackIds||[]).length}</small></button>`).join('')}</div>
-      <div class="afm-provider-note"><strong>Audio-only music</strong><p>Streamable tracks from independent creators on Audius. No subscription or file importing required.</p><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Discover Audius ↗</a></div>`;
+      <div class="afm-provider-note"><strong>Music that actually plays</strong><p>Full tracks stream from independent creators on Audius. Mainstream releases play as 30 second Preview clips, so the whole catalog is searchable without a subscription.</p><a href="https://music.apple.com/" target="_blank" rel="noopener noreferrer">Browse Apple Music ↗</a></div>`;
   }
   function headerTitle() {
     const list = getPlaylists();
@@ -162,6 +349,59 @@
     host.replaceWith(template.content.firstElementChild);
     syncLyrics(true);
   }
+  function cleanTitle(value) {
+    return String(value || '')
+      .replace(/\((?:feat|ft|with)\.?[^)]*\)/gi, '')
+      .replace(/\[(?:feat|ft|with)\.?[^\]]*\]/gi, '')
+      .replace(/\s*-\s*(?:remaster(?:ed)?|deluxe|explicit|radio edit|single version)\b.*$/i, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+  function parseLrc(value) {
+    const lines = [];
+    const stamp = /\[(\d{1,2}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
+    for (const rawLine of String(value || '').split(/\r?\n/)) {
+      const text = rawLine.replace(/\[[^\]]*\]/g, '').trim();
+      if (!text) continue;
+      let match;
+      stamp.lastIndex = 0;
+      let placed = false;
+      while ((match = stamp.exec(rawLine))) {
+        const minutes = Number(match[1]);
+        const seconds = Number(match[2]);
+        const fraction = match[3] ? Number(`0.${match[3]}`) : 0;
+        lines.push({ time: minutes * 60 + seconds + fraction, text });
+        placed = true;
+      }
+      if (!placed) lines.push({ time: null, text });
+    }
+    const timed = lines.filter(line => typeof line.time === 'number');
+    if (timed.length < 4) return { synced: false, lines: lines.map(({ text }) => ({ time: null, text })) };
+    return { synced: true, lines: timed.sort((a, b) => a.time - b.time) };
+  }
+  function lyricsPayload(record) {
+    if (!record) return { found: false, synced: false, lines: [], source: 'LRCLIB' };
+    if (record.instrumental) return { found: true, synced: false, lines: [{ time: null, text: 'Instrumental track.' }], source: 'LRCLIB' };
+    if (record.syncedLyrics) {
+      const parsed = parseLrc(record.syncedLyrics);
+      if (parsed.lines.length) return { found: true, synced: parsed.synced, lines: parsed.lines, source: 'LRCLIB' };
+    }
+    if (record.plainLyrics) {
+      const lines = String(record.plainLyrics).split(/\r?\n/).map(text => ({ time: null, text: text.trim() })).filter(line => line.text);
+      if (lines.length) return { found: true, synced: false, lines, source: 'LRCLIB' };
+    }
+    return { found: false, synced: false, lines: [], source: 'LRCLIB' };
+  }
+  function scoreRecord(record, title, artist) {
+    const name = cleanTitle(record.trackName || record.name || '').toLowerCase();
+    const who = String(record.artistName || '').toLowerCase();
+    let score = 0;
+    if (name === title.toLowerCase()) score += 3;
+    else if (name.includes(title.toLowerCase()) || title.toLowerCase().includes(name)) score += 1;
+    if (who.includes(artist.toLowerCase()) || artist.toLowerCase().includes(who)) score += 2;
+    if (record.syncedLyrics) score += 2;
+    return score;
+  }
   async function loadLyrics(track, force = false) {
     if (!track?.id) return;
     if (!force && lyricsTrackId === String(track.id) && lyrics) return;
@@ -169,13 +409,25 @@
     const token = ++lyricsToken;
     lyricsLoading = true; lyrics = null; activeLyricIndex = -1;
     renderLyrics();
-    const query = new URLSearchParams({ title: track.title, artist: track.artist });
-    if (track.duration) query.set('duration', String(Math.round(track.duration)));
+    const title = cleanTitle(track.title);
+    const artist = String(track.artist || '').split(/\s*(?:,|&|feat\.?|ft\.?|with)\s*/i)[0].trim() || track.artist;
+    const params = new URLSearchParams({ track_name: title, artist_name: artist });
+    if (track.duration) params.set('duration', String(Math.round(track.duration)));
+    let record = null;
     try {
-      const response = await fetch(`${LYRICS_API}?${query}`, { headers: { Accept: 'application/json' }, cache: 'no-store' });
-      const data = await response.json().catch(() => ({}));
+      try {
+        record = await fetchJson(`${LYRICS_API}/get?${params}`);
+      } catch {
+        record = null;
+      }
+      if (!record) {
+        const list = await fetchJson(`${LYRICS_API}/search?${params}`);
+        const rows = Array.isArray(list) ? list : [];
+        rows.sort((a, b) => scoreRecord(b, title, artist) - scoreRecord(a, title, artist));
+        record = rows.find(row => scoreRecord(row, title, artist) > 0) || null;
+      }
       if (token !== lyricsToken) return;
-      lyrics = Array.isArray(data?.lines) && data.lines.length ? data : { found: false, lines: [], source: 'LRCLIB' };
+      lyrics = lyricsPayload(record);
     } catch (error) {
       if (token !== lyricsToken) return;
       lyrics = { found: false, lines: [], source: 'LRCLIB', error: String(error?.message || error) };
@@ -188,7 +440,7 @@
     const lines = Array.isArray(lyrics.lines) ? lyrics.lines : [];
     if (!lines.length) return;
     // 120 ms of lead so a line lights up as it is sung, not after.
-    const head = (audio.currentTime || 0) * 1000 + 120;
+    const head = engineTime() * 1000 + 120;
     let index = -1;
     for (let i = 0; i < lines.length; i += 1) {
       if (typeof lines[i].time === 'number' && lines[i].time * 1000 <= head) index = i;
@@ -221,12 +473,15 @@
     if (!artistsCache.length) {
       content.innerHTML = '<div class="afm-loading"><span></span> Gathering artists…</div>';
       try {
-        const data = await api('/trending?time=week&limit=50');
-        artistsCache = (data.tracks || []).map(normalize).filter(allowed);
+        const [audius, popular] = await Promise.allSettled([audiusTrending(60), popularTracks()]);
+        const pool = [];
+        if (audius.status === 'fulfilled') pool.push(...audius.value);
+        if (popular.status === 'fulfilled') pool.push(...popular.value);
+        artistsCache = dedupe(pool);
         artistsCache.forEach(remember);
       } catch (err) { setStatus(err.message, 'error'); }
     }
-    content.innerHTML = `<section class="afm-collection-head"><div><span class="afm-kicker">DISCOVER</span><h2>Artists</h2><p>Creators trending on Audius this week</p></div><button data-action="music-view" data-id="browse">Discover music</button></section>${artistCards(artistsCache)}`;
+    content.innerHTML = `<section class="afm-collection-head"><div><span class="afm-kicker">DISCOVER</span><h2>Artists</h2><p>Mainstream releases from Apple Music and creators trending on Audius</p></div><button data-action="music-view" data-id="browse">Discover music</button></section>${artistCards(artistsCache)}`;
     setStatus('');
   }
   function renderPage() {
@@ -248,10 +503,10 @@
         ${playlistView()}
       </aside>
       <main class="afm-music-main">
-        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Audio-only playback · Free creator catalog · Powered by Audius</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Audius ↗</a></div></header>
+        <header class="afm-music-head"><div><span class="afm-kicker">AF GAME HUB · MUSIC</span><h2>${esc(headerTitle())}</h2><p>Full tracks · Mainstream catalogue plus independent creator streams · Lyrics from LRCLIB</p></div><div class="afm-head-actions"><button data-action="music-refresh">↻ Refresh</button><a href="https://music.youtube.com/" target="_blank" rel="noopener noreferrer">YouTube Music ↗</a></div></header>
         <div id="afmStatus" class="afm-status" hidden></div>
         <div id="afmContent"><div class="afm-loading"><span></span> Loading your music…</div></div>
-        <footer class="afm-music-footer">Tracks are streamed from Audius. Artist names, artwork, and original track links are retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Open Music License</a>.</footer>
+        <footer class="afm-music-footer">Mainstream tracks play full length through the embedded YouTube engine. Independent tracks stream directly from Audius, with artist names, artwork, and original links retained. <a href="https://audius.org/open-music-license.pdf" target="_blank" rel="noopener noreferrer">Audius Open Music License</a>.</footer>
       </main>
       ${lyricsPanel()}
     </div>`;
@@ -272,16 +527,21 @@
     const content = document.getElementById('afmContent');
     if (!content) return;
     content.innerHTML = '<div class="afm-loading"><span></span> Finding trending tracks…</div>';
-    setStatus('Connecting to the free Audius music catalog…');
+    setStatus('Loading the full-length catalogue…');
     try {
-      const data = await api('/trending?time=week&limit=30');
+      const [popular, trending] = await Promise.allSettled([popularTracks(), audiusTrending(30)]);
       if (thisReq !== requestNo || !document.getElementById('afmContent')) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      const mainstream = popular.status === 'fulfilled' ? popular.value : [];
+      const indie = trending.status === 'fulfilled' ? trending.value : [];
+      if (popular.status === 'rejected' && trending.status === 'rejected') {
+        throw new Error(popular.reason?.message || trending.reason?.message || 'The music services did not answer.');
+      }
+      const tracks = dedupe([...mainstream, ...indie]);
       tracks.forEach(remember);
-      artistsCache = tracks;
+      artistsCache = dedupe([...mainstream, ...indie]);
       visibleTracks = tracks;
-      setStatus(tracks.length ? `${tracks.length} streamable tracks loaded.` : 'The catalog did not return playable tracks. Try refreshing.');
-      content.innerHTML = `${section('Trending songs',grid(tracks.slice(0,18)))}${section('Popular artists',artistCards(tracks))}${section('Recently played',renderHistory())}`;
+      setStatus(tracks.length ? `${tracks.length} full tracks loaded.` : 'The catalogue did not return tracks. Try refreshing.');
+      content.innerHTML = `${section('Popular right now',grid(mainstream.slice(0,18)))}${section('Trending on Audius',grid(indie.slice(0,12)))}${section('Popular artists',artistCards(artistsCache))}${section('Recently played',renderHistory())}`;
     } catch (err) {
       if (thisReq !== requestNo) return;
       lastError = err.message;
@@ -301,18 +561,19 @@
     const content = document.getElementById('afmContent');
     const form = document.getElementById('musicSearchForm');
     if (!content) { AF.renderRoute('music'); return; }
-    content.innerHTML = '<div class="afm-loading"><span></span> Searching tracks and artists…</div>';
-    setStatus('Searching Audius…');
+    content.innerHTML = '<div class="afm-loading"><span></span> Searching the catalogue…</div>';
+    setStatus('Searching full-length tracks…');
     const req = ++requestNo;
     try {
-      const data = await api(`/search?q=${encodeURIComponent(searchText)}&limit=30`);
+      const [main, audius] = await Promise.allSettled([pipedSearch(searchText, 30), audiusSearch(searchText, 20)]);
       if (req !== requestNo) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      const mainstream = main.status === 'fulfilled' ? main.value : [];
+      const indie = audius.status === 'fulfilled' ? audius.value : [];
+      const tracks = dedupe([...mainstream, ...indie]);
       tracks.forEach(remember);
       visibleTracks = tracks;
-      const artists = data.artists || [];
-      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable match was found in Audius. This catalog does not include every mainstream artist or release.</div>')}${artists.length?section('Artists',`<div class="afm-artist-grid">${artists.map(a=>`<button class="afm-artist-card" data-action="music-artist" data-id="${esc(a.id)}" data-name="${esc(a.name||a.handle)}"><span>${a.artwork?`<img src="${esc(a.artwork)}" alt="" loading="lazy">`:'♫'}</span><strong>${esc(a.name||a.handle)}</strong><small>Artist</small></button>`).join('')}</div>`):''}`;
-      setStatus(`${tracks.length} playable tracks · ${artists.length} artists found.`);
+      content.innerHTML = `${section(`Tracks matching “${searchText}”`,tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:`<div class="afm-empty">No match for “${esc(searchText)}”. Try the artist name on its own.</div>`)}${section('Artists',artistCards(tracks))}`;
+      setStatus(`${tracks.length} full tracks · ${mainstream.length} catalogue · ${indie.length} Audius.`);
     } catch (err) {
       if (req !== requestNo) return;
       setStatus(err.message,'error');
@@ -328,11 +589,28 @@
     setStatus('');
     const req = ++requestNo;
     try {
-      const data = await api(`/artist/${encodeURIComponent(id)}`);
+      let tracks = [];
+      if (String(id).startsWith('yt:')) {
+        tracks = await pipedSearch(String(id).slice(3) || name || '', 40);
+        tracks = tracks.filter(track => track.artistId === String(id));
+      } else if (String(id).startsWith('itunes:')) {
+        const data = await fetchJson(`${ITUNES}/lookup?id=${encodeURIComponent(String(id).slice(7))}&entity=song&limit=50&country=US`);
+        tracks = (data.results || []).map(normalizeItunes).filter(Boolean);
+      } else {
+        try {
+          const data = await fetchJson(`${AUDIUS}/users/${encodeURIComponent(id)}/tracks?limit=50&app_name=${APP_NAME}`);
+          tracks = (data.data || []).map(normalize).filter(allowed);
+        } catch {
+          const fallback = await audiusSearch(name || id, 30);
+          tracks = fallback.filter(track => String(track.artistId) === String(id));
+        }
+      }
       if (req !== requestNo) return;
-      const tracks = (data.tracks || []).map(normalize).filter(allowed);
+      tracks = dedupe(tracks);
       tracks.forEach(remember); visibleTracks = tracks;
-      content.innerHTML = `<section class="afm-artist-hero"><div class="afm-artist-orb">♫</div><div><span class="afm-kicker">ARTIST</span><h2>${esc(name||'Artist')}</h2><p>${tracks.length} available tracks on Audius</p><a href="https://audius.co/" target="_blank" rel="noopener noreferrer">Explore creators ↗</a></div></section>${section('Tracks',tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable tracks were found for this artist.</div>')}`;
+      const provider = String(id).startsWith('yt:') ? 'YouTube' : String(id).startsWith('itunes:') ? 'Apple Music' : 'Audius';
+      content.innerHTML = `<section class="afm-artist-hero"><div class="afm-artist-orb">${tracks[0]?.artwork?`<img src="${esc(tracks[0].artwork)}" alt="" referrerpolicy="no-referrer">`:'♫'}</div><div><span class="afm-kicker">ARTIST</span><h2>${esc(name||'Artist')}</h2><p>${tracks.length} playable tracks on ${provider}</p><a href="${String(id).startsWith('itunes:')?'https://music.apple.com/':'https://audius.co/'}" target="_blank" rel="noopener noreferrer">Open on ${provider} ↗</a></div></section>${section('Tracks',tracks.length?`<div class="afm-track-list">${tracks.map(row).join('')}</div>`:'<div class="afm-empty">No playable tracks were found for this artist.</div>')}`;
+      setStatus(`${tracks.length} tracks loaded.`);
     } catch (err) { setStatus(err.message,'error'); content.innerHTML = '<div class="afm-empty">Could not load this artist right now.</div>'; }
   }
   function playlistTracks(id) {
@@ -396,6 +674,381 @@
     }));
     document.getElementById('afmNewFromPick')?.addEventListener('click',()=>{AF.closeDialog();createPlaylist();});
   }
+  /* ---- YouTube engine ---------------------------------------------------
+     Mainstream rows carry a `yt:<videoId>` id. They play through YouTube's
+     official IFrame API, which owns the postMessage handshake, the state
+     machine and the autoplay retries. The old engine parked the frame at
+     left:-9999px with opacity:0; Chrome treats that as a non-visible document
+     and rejects every autoplay request inside it, so the player reported
+     "playing" while producing no audio. The host below is 2x2, still inside
+     the viewport, and at opacity .01 — visible by every heuristic that
+     matters, invisible to the eye. */
+  let ytFrame = null;
+  let ytHost = null;
+  let ytPlayer = null;
+  let ytApiPromise = null;
+  let ytPlayerId = 'afyt' + Math.random().toString(36).slice(2, 8);
+  let ytVideoId = '';
+  let ytState = -1;
+  let ytTime = 0;
+  let ytDuration = 0;
+  let ytVolume = 80;
+  // Video ids whose owner disabled embedding (errors 100/101/150/151). Retrying
+  // the same id never helps, so they are remembered and never loaded twice.
+  const ytBlocked = new Set();
+  // The track the user actually clicked. Recovery works back towards this and
+  // never advances the queue, because skipping is exactly the bug that made a
+  // chosen song turn into somebody else's song.
+  let ytAttemptTrack = null;
+  let ytRecovering = false;
+  let ytLoadSerial = 0;
+  let ytWatchdog = 0;
+  // True when a YouTube row is being served by the audio element because the
+  // embed was unavailable. The UI then reads the audio element, not the frame.
+  let ytSuspended = false;
+
+  function ytActive() {
+    return !ytSuspended && !!(currentTrack && String(currentTrack.id).startsWith('yt:') && (ytPlayer || ytFrame));
+  }
+
+  // Title comparison for same-song matching. Upload titles arrive as
+  // "Artist - Song (Official Audio)", so brackets are dropped and everything
+  // that is not a letter or digit is stripped before matching.
+  function coreKey(value) {
+    return String(value || '')
+      .toLowerCase()
+      .replace(/[([][^)\]]*[)\]]/g, ' ')
+      .replace(/[^a-z0-9]+/g, '');
+  }
+  function sameSong(a, b) {
+    const key = coreKey(a);
+    const other = coreKey(b);
+    if (!key || !other) return false;
+    if (key === other) return true;
+    if (key.length < 6 || other.length < 6) return false;
+    return key.includes(other) || other.includes(key);
+  }
+
+  function loadYTAPI() {
+    if (ytApiPromise) return ytApiPromise;
+    ytApiPromise = new Promise((resolve, reject) => {
+      if (window.YT && window.YT.Player) return resolve(window.YT);
+      const previous = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = () => {
+        try { if (typeof previous === 'function') previous(); } catch {}
+        resolve(window.YT);
+      };
+      const script = document.createElement('script');
+      script.src = 'https://www.youtube.com/iframe_api';
+      script.async = true;
+      script.onerror = () => reject(new Error('youtube iframe api blocked'));
+      document.head.appendChild(script);
+      setTimeout(() => {
+        if (window.YT && window.YT.Player) resolve(window.YT);
+        else reject(new Error('youtube iframe api timeout'));
+      }, 12000);
+    });
+    return ytApiPromise;
+  }
+
+  function ensureYT() {
+    if (ytHost && document.body.contains(ytHost)) return ytHost;
+    ytHost = document.createElement('div');
+    ytHost.id = 'afYtHost';
+    ytHost.setAttribute('aria-hidden', 'true');
+    // 220x220, not 2x2: YouTube refuses to init playback in a player smaller
+    // than the recommended minimum, and a clipped 1px player reports ready then
+    // stalls. The element keeps full size; the wrapper hides it.
+    ytHost.style.cssText = 'position:fixed;right:0;bottom:0;width:220px;height:220px;overflow:hidden;opacity:.01;pointer-events:none;z-index:-1';
+    document.body.appendChild(ytHost);
+    return ytHost;
+  }
+
+  function ytPost(payload) {
+    try { ytFrame?.contentWindow?.postMessage(JSON.stringify(payload), '*'); } catch {}
+  }
+  function ytCommand(func, args = []) {
+    if (ytPlayer && typeof ytPlayer[func] === 'function') {
+      try { ytPlayer[func](...args); return; } catch {}
+    }
+    ytPost({ event: 'command', func, args, id: ytPlayerId, channel: 'widget' });
+  }
+  function ytHandshake() {
+    ytPost({ event: 'listening', id: ytPlayerId, channel: 'widget' });
+  }
+
+  // An unmuted playVideo() is still gated behind user activation in some
+  // browsers. Start muted — always permitted — then lift the mute once the
+  // player reports PLAYING so the audio actually reaches the speakers.
+  function ytPlay() {
+    if (!ytPlayer || typeof ytPlayer.playVideo !== 'function') return;
+    try { ytPlayer.playVideo(); } catch {}
+    setTimeout(() => {
+      let state = -1;
+      try { state = ytPlayer.getPlayerState(); } catch {}
+      if (state === 1) {
+        try { ytPlayer.unMute(); ytPlayer.setVolume(ytVolume); } catch {}
+        return;
+      }
+      try { ytPlayer.mute(); ytPlayer.playVideo(); } catch {}
+      setTimeout(() => {
+        try { ytPlayer.unMute(); ytPlayer.setVolume(ytVolume); ytPlayer.playVideo(); } catch {}
+      }, 800);
+    }, 700);
+  }
+
+  // Resolves once a video id has been handed to a live player. Callers wait on
+  // the state machine after this; "load() returned" is not "audio started".
+  function ytLoad(videoId) {
+    ensureYT();
+    const serial = ++ytLoadSerial;
+    ytSuspended = false;
+    ytVideoId = videoId;
+    ytState = -1;
+    ytTime = 0;
+    ytDuration = 0;
+    clearTimeout(ytWatchdog);
+    return loadYTAPI().then((YT) => {
+      if (serial !== ytLoadSerial) return null;
+      if (!YT || typeof YT.Player !== 'function') throw new Error('player unavailable');
+      if (ytPlayer && typeof ytPlayer.loadVideoById === 'function') {
+        try {
+          ytPlayer.loadVideoById(videoId);
+          ytPlay();
+          armWatchdog();
+          return ytPlayer;
+        } catch {}
+      }
+      if (ytPlayer) { try { ytPlayer.destroy(); } catch {} ytPlayer = null; }
+      ytHost.innerHTML = '';
+      const mount = document.createElement('div');
+      ytHost.appendChild(mount);
+      ytPlayer = new YT.Player(mount, {
+        width: '220',
+        height: '220',
+        videoId,
+        playerVars: {
+          autoplay: 1, playsinline: 1, rel: 0, controls: 0, fs: 0,
+          disablekb: 1, modestbranding: 1, iv_load_policy: 3, origin: location.origin
+        },
+        events: {
+          onReady: () => {
+            try { ytPlayer.setVolume(ytVolume); } catch {}
+            ytPlay();
+            armWatchdog();
+          },
+          onStateChange: (event) => applyYtState(Number(event.data)),
+          onError: (event) => {
+            const code = Number(event && event.data);
+            console.warn('youtube player error', code);
+            // Every id that fails here is remembered, and the current wait is
+            // failed immediately instead of sitting out its timeout.
+            ytBlocked.add(String(ytVideoId));
+            ytState = -2;
+            ytRecover(code);
+          }
+        }
+      });
+      ytFrame = (ytPlayer.getIframe && ytPlayer.getIframe()) || null;
+      return ytPlayer;
+    }).catch((error) => {
+      // The API host is blocked or slow: fall back to the plain embed so the
+      // row at least produces a frame and the widget bridge can drive it.
+      console.warn('youtube iframe api fallback:', error && error.message);
+      const origin = encodeURIComponent(location.origin || 'https://localhost');
+      const frame = document.createElement('iframe');
+      frame.id = 'afYtFrame';
+      frame.title = 'Audio engine';
+      frame.allow = 'autoplay; encrypted-media; picture-in-picture';
+      frame.setAttribute('referrerpolicy', 'no-referrer');
+      frame.src = `https://www.youtube-nocookie.com/embed/${videoId}?autoplay=1&enablejsapi=1&playsinline=1&rel=0&origin=${origin}`;
+      ytHost.innerHTML = '';
+      ytHost.appendChild(frame);
+      ytFrame = frame;
+      armWatchdog();
+      return null;
+    });
+  }
+
+  // A player that never reaches PLAYING and never errors is the silent failure:
+  // autoplay refused, or the embed stalled. Catch it instead of pretending the
+  // row is playing.
+  function armWatchdog() {
+    clearTimeout(ytWatchdog);
+    ytWatchdog = setTimeout(() => {
+      if (ytState === 1 || ytState === 2 || ytState === 3 || ytState === -2) return;
+      ytRecover('no-start');
+    }, 9000);
+  }
+
+  function ytWaitState(target, ms) {
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = () => {
+        if (ytState === target) return resolve(true);
+        if (ytState === -2) return resolve(false);
+        if (Date.now() - started >= ms) return resolve(false);
+        setTimeout(tick, 250);
+      };
+      tick();
+    });
+  }
+
+  async function ytTryVideo(videoId) {
+    if (!videoId || ytBlocked.has(videoId)) return false;
+    try { await ytLoad(videoId); } catch { return false; }
+    const playing = await ytWaitState(1, 3500);
+    if (!playing) ytBlocked.add(videoId);
+    return playing;
+  }
+
+  // Same song, different upload. Only rows whose title matches the clicked
+  // track are accepted; a neighbour is the bug this replaces.
+  async function ytAlternateIds(track) {
+    const found = [];
+    const queries = [`${track.title} ${track.artist}`.trim(), track.title];
+    for (const query of queries) {
+      if (found.length >= 2) break;
+      let rows = [];
+      try { rows = await pipedSearch(query, 25); } catch { rows = []; }
+      for (const row of rows) {
+        const videoId = String(row.id).slice(3);
+        if (!videoId || ytBlocked.has(videoId) || found.includes(videoId)) continue;
+        if (String(track.id) === `yt:${videoId}`) continue;
+        if (!sameSong(row.title, track.title)) continue;
+        found.push(videoId);
+        if (found.length >= 2) break;
+      }
+    }
+    return found;
+  }
+
+  // Last resort that still plays the requested song: the same title on a
+  // catalogue that serves direct audio rather than an embed.
+  async function sameSongStream(track) {
+    const query = `${track.title} ${track.artist}`.trim();
+    try {
+      const rows = await audiusSearch(query, 10);
+      const hit = rows.find((row) => sameSong(row.title, track.title) && isHttpUrl(row.stream));
+      if (hit) return hit;
+    } catch {}
+    try {
+      const rows = await itunesSearch(query, 10);
+      const hit = rows.find((row) => sameSong(row.title, track.title) && isHttpUrl(row.stream));
+      if (hit) return hit;
+    } catch {}
+    return null;
+  }
+
+  // Direct audio for any track. Audio only: the YouTube frame is paused first
+  // so two engines never play over each other.
+  function playNative(track) {
+    if (ytPlayer && typeof ytPlayer.pauseVideo === 'function') {
+      try { ytPlayer.pauseVideo(); } catch {}
+    }
+    const src = streamFor(track);
+    if (!src) return false;
+    ytSuspended = true;
+    audio.src = src;
+    audio.load();
+    audio.play().catch(() => AF.toast('Press play to start this track.', 'error'));
+    document.body.classList.add('music-playing');
+    updatePlayer();
+    return true;
+  }
+
+  // One recovery per track. It never advances the queue: another upload of the
+  // same song, then direct audio of the same song, then stop and say so.
+  async function ytRecover(code) {
+    const track = ytAttemptTrack;
+    if (!track || ytRecovering) return;
+    if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+    ytRecovering = true;
+    clearTimeout(ytWatchdog);
+    try {
+      if (code !== 'no-start') AF.toast('Finding a playable version of this track…', 'warning');
+      const alternates = await ytAlternateIds(track);
+      for (const videoId of alternates) {
+        if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+        if (await ytTryVideo(videoId)) return;
+      }
+      if (!currentTrack || String(currentTrack.id) !== String(track.id)) return;
+      const native = await sameSongStream(track);
+      if (native && playNative(native)) return;
+      AF.toast('No playable source for this track. Pick another result.', 'error');
+      document.body.classList.remove('music-playing');
+      applyYtState(2);
+    } catch (error) {
+      console.warn('track recovery failed', error && error.message);
+      AF.toast('No playable source for this track. Pick another result.', 'error');
+      document.body.classList.remove('music-playing');
+      applyYtState(2);
+    } finally {
+      ytRecovering = false;
+    }
+  }
+
+  function applyYtState(state) {
+    if (!Number.isFinite(state)) return;
+    ytState = state;
+    if (state === 1) clearTimeout(ytWatchdog);
+    // Only a YouTube track owns the playing class. A native track pauses the
+    // frame on purpose and that pause event must not clear its state.
+    if (ytActive()) document.body.classList.toggle('music-playing', state === 1);
+    if (state === 0) {
+      // A stray end event from the frame must not advance a native track.
+      if (!ytActive()) return;
+      if (repeatMode === 'one') { ytCommand('seekTo', [0, true]); ytCommand('playVideo'); return; }
+      nextTrack(1);
+      return;
+    }
+    if (state === 1 || state === 2 || state === 5) updatePlayer();
+  }
+
+  window.addEventListener('message', (event) => {
+    if (!ytFrame) return;
+    const raw = typeof event.data === 'string' ? event.data : '';
+    if (!raw || (raw.indexOf('infoDelivery') === -1 && raw.indexOf('onReady') === -1 && raw.indexOf('onStateChange') === -1)) return;
+    let msg;
+    try { msg = JSON.parse(raw); } catch { return; }
+    if (!msg || !msg.event) return;
+    if (msg.event === 'onReady') {
+      ytHandshake();
+      ytCommand('setVolume', [ytVolume]);
+      return;
+    }
+    if (msg.event === 'onStateChange') {
+      applyYtState(Number(msg.info));
+      return;
+    }
+    if (msg.event === 'infoDelivery' && msg.info) {
+      if (typeof msg.info.currentTime === 'number') ytTime = msg.info.currentTime;
+      if (typeof msg.info.duration === 'number' && msg.info.duration) ytDuration = msg.info.duration;
+      if (typeof msg.info.playerState === 'number') applyYtState(msg.info.playerState);
+      if (ytActive()) paintTime();
+    }
+  });
+
+  function engineTime() {
+    return ytActive() ? ytTime : (audio.currentTime || 0);
+  }
+  function engineDuration() {
+    return ytActive() ? (ytDuration || currentTrack?.duration || 0) : (audio.duration || currentTrack?.duration || 0);
+  }
+  function enginePlaying() {
+    return ytActive() ? ytState === 1 || ytState === 3 : !audio.paused;
+  }
+  function paintTime() {
+    const seek = document.getElementById('miniSeek');
+    const elapsed = document.getElementById('miniElapsed');
+    const total = document.getElementById('miniDuration');
+    const t = engineTime();
+    const d = engineDuration();
+    if (seek && d) seek.value = String(Math.round(t / d * 1000));
+    if (elapsed) elapsed.textContent = U.fmtTime(t);
+    if (total) total.textContent = U.fmtTime(d);
+  }
+
   function updatePlayer() {
     const player=document.getElementById('miniPlayer'); if(!player)return;
     if(!currentTrack){player.hidden=true;return;}
@@ -404,7 +1057,7 @@
     if(art){art.innerHTML=currentTrack.artwork?`<img src="${esc(currentTrack.artwork)}" alt="" referrerpolicy="no-referrer">`:'♫';}
     document.getElementById('miniTitle').textContent=currentTrack.title;
     document.getElementById('miniArtist').textContent=currentTrack.artist;
-    document.getElementById('miniPlay').textContent=audio.paused?'▶':'Ⅱ';
+    document.getElementById('miniPlay').textContent=enginePlaying()?'Ⅱ':'▶';
     const fav=document.getElementById('miniFavorite'); if(fav){fav.textContent=isFavorite(currentTrack.id)?'♥':'♡';fav.classList.toggle('is-active',isFavorite(currentTrack.id));}
     const repeat=document.getElementById('miniRepeat'); if(repeat){repeat.textContent=repeatMode==='one'?'↻¹':repeatMode==='all'?'↻':'↻̸';repeat.title=`Repeat ${repeatMode}`;}
     const shuffle=document.getElementById('miniShuffle'); if(shuffle){shuffle.classList.toggle('is-active',shuffleMode);}
@@ -423,11 +1076,19 @@
     const history=getHistory().filter(t=>String(t.id)!==String(track.id));
     AFStore.set('musicHistory',[track,...history].slice(0,30));
     audio.pause();
-    audio.src=`${API}/stream/${encodeURIComponent(track.id)}`;
-    audio.load(); updatePlayer();
+    audio.removeAttribute('src');
+    audio.load();
+    if (String(track.id).startsWith('yt:')) {
+      ytAttemptTrack = track;
+      ytRecovering = false;
+      ytLoad(String(track.id).slice(3));
+      updatePlayer();
+    } else {
+      ytAttemptTrack = null;
+      if (ytFrame) ytCommand('pauseVideo');
+      if (!playNative(track)) { AF.toast('No stream URL for this track. Pick another result.','error'); document.body.classList.remove('music-playing'); updatePlayer(); return; }
+    }
     if (lyricsOpen) loadLyrics(track);
-    try { await audio.play(); updatePlayer(); }
-    catch (error) { AF.toast('Playback could not start. Press play again or choose another track.','error'); }
     document.querySelectorAll('.afm-track-row,.afm-track-card').forEach(el=>el.classList.toggle('is-playing',!!el.querySelector(`[data-id="${CSS.escape(String(track.id))}"]`)));
   }
   function nextTrack(direction=1) {
@@ -438,17 +1099,12 @@
     const next=queue[queueIndex]; if(next)playTrackById(next.id);
   }
   function timeUpdate() {
-    const seek=document.getElementById('miniSeek');
-    const elapsed=document.getElementById('miniElapsed');
-    const total=document.getElementById('miniDuration');
-    if(seek && audio.duration) seek.value=String(Math.round(audio.currentTime/audio.duration*1000));
-    if(elapsed) elapsed.textContent=U.fmtTime(audio.currentTime||0);
-    if(total) total.textContent=U.fmtTime(audio.duration||currentTrack?.duration||0);
+    paintTime();
     syncLyrics();
   }
   function renderInfo() {
     if(!currentTrack)return;
-    AF.dialog(`<div class="dialog-head"><div><div class="eyebrow">NOW PLAYING</div><h2>${esc(currentTrack.title)}</h2></div><button class="icon-button" data-action="close-dialog">×</button></div><div class="dialog-body"><div class="afm-info-row">${artwork(currentTrack,'afm-info-art')}<div><strong>${esc(currentTrack.artist)}</strong><small>${esc(currentTrack.genre||'Audius track')}</small></div></div><p>${esc(currentTrack.description||'This creator has not added a track description.')}</p><p class="section-sub">Audio streamed directly from Audius. Creator and original track information remain available.</p><a class="btn btn-primary" href="${esc(currentTrack.permalink)}" target="_blank" rel="noopener noreferrer">Open original track ↗</a></div>`);
+    AF.dialog(`<div class="dialog-head"><div><div class="eyebrow">NOW PLAYING</div><h2>${esc(currentTrack.title)}</h2></div><button class="icon-button" data-action="close-dialog">×</button></div><div class="dialog-body"><div class="afm-info-row">${artwork(currentTrack,'afm-info-art')}<div><strong>${esc(currentTrack.artist)}</strong><small>${esc(currentTrack.genre||currentTrack.source||'Track')}</small></div></div><p>${esc(currentTrack.description||'This creator has not added a track description.')}</p><p class="section-sub">${esc(currentTrack.source||'Audius')}. Creator and original track information remain available.</p><a class="btn btn-primary" href="${esc(currentTrack.permalink)}" target="_blank" rel="noopener noreferrer">Open original track ↗</a></div>`);
   }
   function onAction(action,id,el) {
     if(action==='music-view') { view=id||'browse'; refreshChrome(); if(view==='search') { searchText=document.getElementById('musicSearchQuery')?.value||searchText; searchMusic(searchText); } else if(view==='browse') loadBrowse(); else if(view==='artists') openArtists(); else openCollection(view); return; }
@@ -462,7 +1118,15 @@
     if(action==='music-refresh') { if(view==='browse')loadBrowse(); else if(view==='search')searchMusic(searchText); else if(view==='artist'&&artistMode)openArtist(artistMode.id,artistMode.name); else openCollection(view,currentPlaylistId); return; }
     if(action==='music-prev') { nextTrack(-1); return; }
     if(action==='music-next') { nextTrack(1); return; }
-    if(action==='music-toggle') { if(!currentTrack)return; if(audio.paused)audio.play().catch(()=>AF.toast('Press play again to start audio.','error')); else audio.pause(); return; }
+    if(action==='music-toggle') {
+      if(!currentTrack)return;
+      if(ytActive()){
+        if(ytState===1){ ytCommand('pauseVideo'); applyYtState(2); }
+        else { ytCommand('playVideo'); applyYtState(1); }
+        updatePlayer(); return;
+      }
+      if(audio.paused)audio.play().catch(()=>AF.toast('Press play again to start audio.','error')); else audio.pause(); return;
+    }
     if(action==='music-repeat') { repeatMode=repeatMode==='off'?'all':repeatMode==='all'?'one':'off'; updatePlayer(); return; }
     if(action==='music-shuffle') { shuffleMode=!shuffleMode; updatePlayer(); return; }
     if(action==='music-favorite-current') { if(currentTrack)toggleFavorite(currentTrack.id); return; }
@@ -477,11 +1141,17 @@
     if(action==='music-lyrics-retry') { if(currentTrack) loadLyrics(currentTrack,true); return; }
     if(action==='music-lyric-seek') {
       const stamp=el?.dataset.time;
-      if(stamp!==undefined&&stamp!=='') { const seconds=Number(stamp); if(Number.isFinite(seconds)) audio.currentTime=seconds; }
+      if(stamp!==undefined&&stamp!=='') {
+        const seconds=Number(stamp);
+        if(Number.isFinite(seconds)) {
+          if(ytActive()){ ytTime=seconds; ytCommand('seekTo',[seconds,true]); paintTime(); }
+          else audio.currentTime=seconds;
+        }
+      }
       return;
     }
     if(action==='music-open-music') { AF.navigate('music'); return; }
-    if(action==='music-stop') { audio.pause(); audio.removeAttribute('src'); audio.load(); currentTrack=null; updatePlayer(); return; }
+    if(action==='music-stop') { audio.pause(); audio.removeAttribute('src'); audio.load(); if(ytFrame)ytCommand('pauseVideo'); ytState=-1; document.body.classList.remove('music-playing'); currentTrack=null; updatePlayer(); return; }
   }
   function bindPage() {
     const form=document.getElementById('musicSearchForm');
@@ -499,8 +1169,8 @@
   function bindGlobal() {
     audio.addEventListener('timeupdate',timeUpdate);
     audio.addEventListener('loadedmetadata',timeUpdate);
-    audio.addEventListener('play',updatePlayer);
-    audio.addEventListener('pause',updatePlayer);
+    audio.addEventListener('play',()=>{if(!ytActive())document.body.classList.add('music-playing');updatePlayer();});
+    audio.addEventListener('pause',()=>{if(!ytActive())document.body.classList.remove('music-playing');updatePlayer();});
     audio.addEventListener('ended',()=>{
       if(repeatMode==='one'){audio.currentTime=0;audio.play().catch(()=>{});return;}
       if(queueIndex<queue.length-1)nextTrack(1);
@@ -508,13 +1178,27 @@
       else {updatePlayer();}
     });
     audio.addEventListener('error',()=>{if(currentTrack)AF.toast('This track could not be streamed. Try another result.','error');});
-    document.getElementById('miniSeek')?.addEventListener('input',e=>{if(audio.duration)audio.currentTime=(Number(e.target.value)/1000)*audio.duration;});
-    document.getElementById('miniVolume')?.addEventListener('input',e=>{audio.volume=Number(e.target.value)/100;AFStore.set('musicVolume',audio.volume);});
+    document.getElementById('miniSeek')?.addEventListener('input',e=>{
+      const ratio=Number(e.target.value)/1000;
+      if(ytActive()){ const seconds=ratio*(ytDuration||currentTrack?.duration||0); ytTime=seconds; ytCommand('seekTo',[seconds,true]); paintTime(); return; }
+      if(audio.duration)audio.currentTime=ratio*audio.duration;
+    });
+    document.getElementById('miniVolume')?.addEventListener('input',e=>{
+      audio.volume=Number(e.target.value)/100;
+      AFStore.set('musicVolume',audio.volume);
+      ytVolume=Math.round(audio.volume*100);
+      if(ytFrame)ytCommand('setVolume',[ytVolume]);
+    });
     audio.volume=Number(AFStore.get('musicVolume',0.8));
+    ytVolume=Math.round(audio.volume*100);
     const volume=document.getElementById('miniVolume'); if(volume)volume.value=String(audio.volume*100);
     const last=AFStore.get('lastMusicTrack',null);
     if(last&&typeof last==='object'&&last.id){currentTrack=normalize(last);remember(currentTrack);updatePlayer();}
   }
   bindGlobal();
-  window.AFMusic={renderPage,bindPage,onAction,playTrack:playTrackById,search:searchMusic};
+  window.AFMusic={renderPage,bindPage,onAction,playTrack:playTrackById,search:searchMusic,pauseAll(){
+    try{audio.pause();}catch{}
+    if(ytFrame)ytCommand('pauseVideo');
+    document.body.classList.remove('music-playing');
+  }};
 })();
