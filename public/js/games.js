@@ -11,6 +11,22 @@
   // but the hub is served from a subpath, so they have to be resolved against
   // the document base or every cover 404s and the grid falls back to initials.
   const artBase = new URL('.', document.baseURI).href;
+
+  // The browser is a separate page at <hub>/go/. A stealth link keeps the game
+  // URL in the fragment, so the CDN or school log only ever sees a request for
+  // /go/ — the destination is decoded locally after boot.
+  function proxyUrlFor(game) {
+    const go = new URL('go/', artBase).href;
+    const bytes = new TextEncoder().encode(String(game.url || ''));
+    let binary = '';
+    for (const byte of bytes) binary += String.fromCharCode(byte);
+    return go + '#' + btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function openProxied(game) {
+    const win = window.open(proxyUrlFor(game), '_blank', 'noopener');
+    if (!win) AF.toast('Popup blocked — allow popups for this site.', 'error');
+  }
   const resolveArt = value => {
     const raw = String(value || '').trim();
     if (!raw) return '';
@@ -89,7 +105,7 @@
     return `<article class="library-card">
       <div class="library-art"><div class="af-art-tile" style="background:linear-gradient(150deg,hsl(${hue} 70% 44%),hsl(${(hue + 52) % 360} 66% 20%))">${U.esc(initials(game.title))}</div>${art}<span class="library-tag">${U.esc(label(game.category))}</span></div>
       <div class="library-card-body"><div class="library-card-title"><strong>${U.esc(game.title)}</strong><button class="icon-btn fav-toggle ${fav ? 'is-fav' : ''}" data-action="game-favorite" data-id="${U.esc(game.id)}" aria-label="${fav ? 'Remove from' : 'Add to'} favorites">${fav ? '&#9829;' : '&#9825;'}</button></div>
-      <p>${U.esc(game.description)}</p><div class="card-actions"><button class="btn btn-primary btn-sm" data-action="game-launch" data-id="${U.esc(game.id)}">Play &#8599;</button></div></div></article>`;
+      <p>${U.esc(game.description)}</p><div class="card-actions"><button class="btn btn-primary btn-sm" data-action="game-launch" data-id="${U.esc(game.id)}">Play &#8599;</button><button class="btn btn-sm" data-action="game-proxy" data-id="${U.esc(game.id)}" title="Open through the proxy browser">Proxy &#8599;</button></div></div></article>`;
   }
 
   function emptyState(message) {
@@ -199,6 +215,7 @@
         <button class="icon-button" data-player="close" aria-label="Close game">&larr;</button>
         <div class="game-player-meta"><strong>${U.esc(game.title)}</strong><small>${U.esc(label(game.category))}</small></div>
         <div class="game-player-actions">
+          <button class="icon-button" data-player="proxy" aria-label="Open in proxy" title="Open in proxy">&#10515;</button>
           <button class="icon-button" data-player="fav" aria-label="Toggle favorite">${isFav(game.id) ? '&#9829;' : '&#9825;'}</button>
           <button class="icon-button" data-player="reload" aria-label="Reload">&#8635;</button>
           <button class="icon-button" data-player="full" aria-label="Fullscreen">&#9974;</button>
@@ -228,6 +245,7 @@
       if (!btn) return;
       const action = btn.dataset.player;
       if (action === 'close') return close();
+      if (action === 'proxy') { openProxied(game); return; }
       if (action === 'reload') { frame.src = frame.src; return; }
       if (action === 'full') {
         const target = host.querySelector('.game-player-frame');
@@ -245,6 +263,13 @@
     document.addEventListener('keydown', onKey);
     activeCleanup = close;
   }
+
+  document.addEventListener('click', ev => {
+    const btn = ev.target.closest('[data-action="game-proxy"]');
+    if (!btn) return;
+    const game = byId.get(btn.dataset.id);
+    if (game) openProxied(game);
+  });
 
   window.AFGames = {
     games,

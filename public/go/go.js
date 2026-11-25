@@ -464,7 +464,9 @@ function base64UrlDecode(value) {
 }
 
 function stealthUrl(url) {
-	return `${location.origin}/go/#${base64UrlEncode(url)}`;
+	// Derived from the module URL, not location.origin: on a CDN subpath the
+	// root-absolute form points at the CDN's own /go/, which does not exist.
+	return `${asset("go/")}#${base64UrlEncode(url)}`;
 }
 
 function readStealthHash() {
