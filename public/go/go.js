@@ -929,6 +929,46 @@ function withTimeout(promise, ms, label) {
 	]);
 }
 
+// A saved Bare URL is a preference, not a promise. Public hosts die and school
+// filters drop whole categories (workers.dev included), so the endpoint is
+// probed at boot. A dead one falls back to the public Wisp relay, which lives
+// on an ordinary domain and is reachable from networks that block Workers.
+async function resolveEndpoint() {
+	if (TRANSPORT_MODE === "bare") {
+		const base = readBareUrl();
+		let alive = false;
+		try {
+			const response = await withTimeout(fetch(`${base}v3/`, { cache: "no-store" }), 5000, "bare meta");
+			alive = response.ok;
+		} catch {
+			alive = false;
+		}
+		if (alive) {
+			state.health.wisp = { state: "ok", note: "bare endpoint", url: base, at: Date.now() };
+			return "bare";
+		}
+		// Stored override may be stale; the default is probed once before giving up.
+		if (readBareUrl() !== BARE_DEFAULT) {
+			try {
+				const response = await withTimeout(fetch(`${BARE_DEFAULT}v3/`, { cache: "no-store" }), 5000, "bare default");
+				if (response.ok) {
+					try { localStorage.setItem(BARE_KEY, BARE_DEFAULT); } catch { /* ignore */ }
+					state.health.wisp = { state: "ok", note: "bare default", url: BARE_DEFAULT, at: Date.now() };
+					return "bare";
+				}
+			} catch {
+				// fall through to Wisp
+			}
+		}
+		TRANSPORT_MODE = "wisp";
+		WISP_URL = "wss://anura.pro/wisp/";
+		WISP_ROTATED = WISP_URL;
+		state.health.wisp = { state: "ok", note: "bare unreachable — public Wisp", url: "wss://anura.pro/wisp/", at: Date.now() };
+		return "wisp";
+	}
+	return "wisp";
+}
+
 async function initTransport() {
 	// The transport module is a 1.7 MB import that the bare-mux worker pulls on
 	// demand. Firing setTransport while the document is still fetching its own
@@ -2272,16 +2312,15 @@ async function boot() {
 	// The transport binds its relay once, so a dead primary has to be replaced
 	// before the worker starts — rotating afterwards leaves every engine pointed
 	// at a socket that never opened.
-	// Bare needs no Wisp socket. Probing the public relay pool on the default
-	// lane only burns seconds on hosts that are already dead.
-	if (TRANSPORT_MODE !== "bare") {
-		try {
-			stage("wisp:begin");
-			await resolveWispFast();
-			stage("wisp:done", new URL(WISP_URL).host);
-		} catch (error) {
-			stage("wisp:failed", String(error?.message || error));
-		}
+	// Pick a live endpoint before seating the transport. If the Bare host is
+	// blocked or dead, this switches the browser to the public Wisp relay so a
+	// filtered network still gets a working lane instead of a blank page.
+	try {
+		stage("endpoint:begin");
+		const lane = await resolveEndpoint();
+		stage("endpoint:" + lane, TRANSPORT_MODE);
+	} catch (error) {
+		stage("endpoint:failed", String(error?.message || error));
 	}
 
 	let transportError = null;
