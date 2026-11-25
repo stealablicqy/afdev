@@ -337,6 +337,35 @@ export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
+    // Their mint only answers when the Referer is their own origin, which a
+    // browser cannot forge. This Worker can, so it fetches the token for us
+    // and hands it to the page with CORS. The socket itself stays direct.
+    if (url.pathname === "/api/dsync") {
+      try {
+        const upstream = await fetch("https://desynctutoring.com/api/session", {
+          headers: {
+            Referer: "https://desynctutoring.com/",
+            "User-Agent": "Mozilla/5.0",
+          },
+          cache: "no-store",
+        });
+        const text = await upstream.text();
+        return new Response(text, {
+          status: upstream.status,
+          headers: {
+            "content-type": "application/json; charset=utf-8",
+            "access-control-allow-origin": "*",
+            "cache-control": "no-store",
+          },
+        });
+      } catch (error) {
+        return new Response(JSON.stringify({ error: String(error?.message || error) }), {
+          status: 502,
+          headers: { "content-type": "application/json", "access-control-allow-origin": "*" },
+        });
+      }
+    }
+
     // On Cloudflare Pages the advanced-mode worker sees every path first.
     // Static files belong to the Pages asset binding; only relay routes are
     // ours. Without this, /go/ and every .js file get the JSON root response.

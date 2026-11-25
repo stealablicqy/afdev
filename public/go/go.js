@@ -60,6 +60,14 @@ function readBareUrl() {
 // Shape: `mint` returns JSON, `token` names the field, `socket` builds the URL.
 const RELAY_MINTS = [
 	{
+		// Minted through our Worker because their mint demands a Referer from
+		// their own origin. The socket is still their public Wisp relay.
+		label: "desync-bridge",
+		mint: "https://af-wisp-relay.jaay847.workers.dev/api/dsync",
+		token: "s",
+		socket: (token) => `wss://desynctutoring.com/wisp/?s=${encodeURIComponent(token)}`,
+	},
+	{
 		label: "desynctutoring",
 		mint: "https://desynctutoring.com/api/session",
 		token: "s",

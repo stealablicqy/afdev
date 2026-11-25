@@ -1490,8 +1490,25 @@ function noteUrl(tab, next) {
 	settleLoad(tab);
 }
 
+// Some sites' HTML comes back without the proxy engine rebasing relative URLs.
+// The frame shares our origin, so we can install the base element ourselves —
+// otherwise "/assets/app.js" resolves against the hub and 404s.
+function injectBase(tab) {
+	if (!tab.url || !/^https?:/i.test(tab.url)) return;
+	try {
+		const doc = tab.frame.contentDocument;
+		if (!doc || !doc.head || doc.querySelector("base")) return;
+		const base = doc.createElement("base");
+		base.href = new URL("/", tab.url).href;
+		doc.head.prepend(base);
+	} catch {
+		// Cross-origin frame: the engine is handling rewriting itself.
+	}
+}
+
 function attachFrame(tab) {
 	tab.frame.addEventListener("load", () => {
+		injectBase(tab);
 		const next = decodeFrameUrl(tab);
 		if (!next) {
 			settleLoad(tab);
