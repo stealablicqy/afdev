@@ -100,6 +100,10 @@ function readBareResponse(response) {
 	return {
 		body: response.body,
 		headers: toObject(pairs),
+		// Scramjet's HTML rewriter reads rawHeaders to find content-type. Without
+		// it, proxied HTML is served un-rewritten and its relative URLs resolve
+		// against the proxy origin instead of the destination.
+		rawHeaders: pairs,
 		status: status ? Number(status) : response.status,
 		statusText: statusText || response.statusText,
 	};
