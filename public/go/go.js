@@ -29,7 +29,8 @@ const WISP_DEFAULT = "wss://connection-wings-auto-trans.trycloudflare.com/wisp/"
 // The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
 const BARE_DEFAULT = "https://connection-wings-auto-trans.trycloudflare.com/bare/";
-const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=5`;
+// Official Mercury Workshop BareClient v3 — the same transport desync ships.
+const BARE_TRANSPORT = `${asset("transport/bare-official.mjs")}?v=1`;
 
 function readBareUrl() {
 	let stored = "";
@@ -1016,7 +1017,8 @@ async function initTransport() {
 				state.connection = new BareMuxConnection(workerPath);
 				mark("baremux:connection");
 				await withTimeout(
-					state.connection.setTransport(BARE_TRANSPORT, [{ bare }]),
+					// BareClient's constructor takes the bare server URL directly.
+					state.connection.setTransport(BARE_TRANSPORT, [bare]),
 					12000,
 					"setTransport bare"
 				);
