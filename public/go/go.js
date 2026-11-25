@@ -1041,7 +1041,10 @@ async function initTransport() {
 	// long-lived tab does not come back to a relay that rejects its credential.
 	// The same rule applies to a tokened Settings override, which names a host but
 	// carries a token that was minted whenever the user pasted it.
-	const relay = RELAY_ACTIVE || relayEntryFor(activeWispUrl());
+	// A user-pasted Wisp URL carries their own IP-bound token. Re-minting it
+	// through our Worker produces a token for Cloudflare's IP, which the relay
+	// rejects with 502. Respect the override exactly as written.
+	const relay = hasWispOverride() ? null : (RELAY_ACTIVE || relayEntryFor(activeWispUrl()));
 	if (relay) {
 		const fresh = await mintRelayUrl(relay);
 		if (fresh) {

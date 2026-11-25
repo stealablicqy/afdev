@@ -1010,7 +1010,8 @@ async function initTransport() {
 	// whole mint + probe ladder below is skipped so a dead public relay cannot
 	// hold up a lane that never touches it.
 	if (TRANSPORT_MODE === "bare") {
-		const bare = readBareUrl().replace(/\/+$/, "");
+		// Keep the trailing slash: BareClient resolves "./v3/" against this base.
+		const bare = readBareUrl();
 		let lastError = null;
 		for (const workerPath of attempts) {
 			try {
