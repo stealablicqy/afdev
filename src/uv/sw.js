@@ -4,8 +4,8 @@
 // jsDelivr or Pages subpath and the worker never installs.
 const DIR = new URL('./', self.location.href).href;
 
-importScripts(DIR + 'uv.bundle.js?v=33');
-importScripts(DIR + 'uv.config.js?v=33');
+importScripts(DIR + 'uv.bundle.js?v=34');
+importScripts(DIR + 'uv.config.js?v=34');
 importScripts(__uv$config.sw || DIR + 'uv.sw.js');
 
 const ultraviolet = new UVServiceWorker();
