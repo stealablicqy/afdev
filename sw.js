@@ -47,6 +47,13 @@ self.addEventListener('activate', event => {
   event.waitUntil((async () => {
     await caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('af-hub-') && key !== CACHE).map(key => caches.delete(key))));
     await readShieldState();
+    // On a root-hosted static site (Pages, S3, GitHub Pages) this worker is not
+    // needed to re-wrap text/plain HTML, and it swallows /go/ navigations.
+    // Unregister it so existing installs heal themselves on the next load.
+    if (new URL(self.registration.scope).pathname === '/') {
+      try { await self.registration.unregister(); } catch { /* ignore */ }
+      return;
+    }
     await self.clients.claim();
   })());
 });

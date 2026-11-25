@@ -165,7 +165,11 @@
   <div class="dialog-layer" id="dialogLayer" hidden></div>
   <audio id="audioEngine" preload="metadata"></audio>
   <script>
-    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+    // A host that serves index.html with a real HTML content type (Cloudflare
+    // Pages, S3, GitHub Pages) does not need the app-shell worker. On a root
+    // scope that worker also swallows /go/, breaking the browser page.
+    const atRoot = new URL('.', location.href).pathname === '/';
+    if (!atRoot && 'serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
       window.addEventListener('load', async () => { try { await navigator.serviceWorker.register('./sw.js'); const registration = await navigator.serviceWorker.ready; const prefs = JSON.parse(localStorage.getItem('afhub.v1.securitySettings') || '{"trackerShield":true}'); registration.active?.postMessage({type:'AFHUB_SHIELD', enabled:prefs.trackerShield!==false}); } catch {} });
     }
   </script>
