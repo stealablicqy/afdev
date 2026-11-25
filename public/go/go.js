@@ -602,18 +602,26 @@ function engineFor(url) {
 // codec has no slashes at all, so the path survives every hop. Scramjet
 // stringifies these functions into its service worker, so both must be
 // self-contained and use only globals available in a worker.
+// XOR with a rotating key before base64url. The result is slash-free for CDN
+// paths and no longer reads as plain base64 of a URL to a linewise filter.
+// Scramjet stringifies these into its worker, so both functions stand alone.
 function sjEncode(url) {
+	const key = [0x5a, 0x3c, 0x6f, 0x21, 0x9b];
 	const bytes = new TextEncoder().encode(String(url || ""));
+	const out = new Uint8Array(bytes.length);
+	for (let i = 0; i < bytes.length; i += 1) out[i] = bytes[i] ^ key[i % 5];
 	let binary = "";
-	for (const byte of bytes) binary += String.fromCharCode(byte);
+	for (const byte of out) binary += String.fromCharCode(byte);
 	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
 }
 
 function sjDecode(text) {
-	const padded = String(text || "").replace(/-/g, "+").replace(/_/g, "/");
-	const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
-	const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-	return new TextDecoder().decode(bytes);
+	const key = [0x5a, 0x3c, 0x6f, 0x21, 0x9b];
+	const raw = String(text || "").replace(/-/g, "+").replace(/_/g, "/");
+	const binary = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
+	const out = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i) ^ key[i % 5];
+	return new TextDecoder().decode(out);
 }
 
 function proxyUrl(tab, url) {
