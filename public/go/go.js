@@ -18,7 +18,7 @@ const SJ_FILES = {
 // A static CDN cannot terminate a proxy hop, so the Wisp relay is external.
 // Override per-device from Settings or localStorage when this host is filtered.
 const WISP_KEY = "af.go.wisp";
-const WISP_DEFAULT = "wss://anura.pro/wisp/";
+const WISP_DEFAULT = "wss://connection-wings-auto-trans.trycloudflare.com/wisp/";
 
 // Bare is the compatibility lane. Wisp + epoxy-tls does TLS inside a WASM Hyper
 // client; sites that fingerprint that stack answer with HTTP/2 resets or kill
@@ -28,7 +28,7 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // the default is the self-hosted Bare v3 on the same Worker as the Wisp relay.
 // The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
-const BARE_DEFAULT = "https://af-wisp-relay.jaay847.workers.dev/bare/";
+const BARE_DEFAULT = "https://connection-wings-auto-trans.trycloudflare.com/bare/";
 const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=5`;
 
 function readBareUrl() {
@@ -38,6 +38,9 @@ function readBareUrl() {
 	} catch {
 		// storage blocked: use the pool
 	}
+	// Old saved hosts point at dead or rate-limited relays. Drop them so this
+	// build always lands on the tunnel unless the user deliberately sets one.
+	if (/af-wisp-relay\.jaay847|bare\.mercurywork|anura\.pro/i.test(stored)) stored = "";
 	return /^https?:\/\//i.test(stored) ? stored.replace(/\/+$/, "") + "/" : BARE_DEFAULT;
 }
 
@@ -100,6 +103,7 @@ function readWispUrl() {
 	} catch {
 		// private mode / blocked storage: fall back to the default relay
 	}
+	if (/af-wisp-relay\.jaay847|anura\.pro|wisp\.mercurywork/i.test(stored)) stored = "";
 	return /^wss?:\/\//i.test(stored) ? stored : WISP_DEFAULT;
 }
 
