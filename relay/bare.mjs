@@ -141,6 +141,22 @@ async function doBareFetch(request) {
   headers.set("x-bare-headers", JSON.stringify([...response.headers.entries()]));
   for (const [key, value] of Object.entries(CORS)) headers.set(key, value);
 
+  // The engines do not always rebase relative URLs in the returned document.
+  // A base element makes "/assets/app.js" resolve against the destination,
+  // so subresources stay inside the proxied origin instead of hitting ours.
+  if (/text\/html/i.test(headers.get("content-type") || "")) {
+    let html = await response.text();
+    if (!/<base\b/i.test(html)) {
+      const base = String(response.url || remote.href).replace(/["<>]/g, "");
+      const tag = `<base href="${base}">`;
+      html = /<head[^>]*>/i.test(html)
+        ? html.replace(/<head[^>]*>/i, (m) => m + tag)
+        : tag + html;
+    }
+    headers.set("content-length", String(new TextEncoder().encode(html).length));
+    return new Response(html, { status: 200, headers });
+  }
+
   return new Response(response.body, { status: 200, headers });
 }
 
