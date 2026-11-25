@@ -1,0 +1,18 @@
+/* Transparent, animated, minimalistic shell. One background layer lives behind
+   everything; panels and the sidebar let it through. Selectable in Settings. */
+:root{--glass-bg:rgba(16,18,26,.62);--glass-line:rgba(255,255,255,.09)}
+
+html[data-bg] body{background:#080910;position:relative}
+html[data-bg] body:before{content:"";position:fixed;inset:-20%;z-index:-1;pointer-events:none;opacity:.55;transition:opacity .4s}
+html[data-bg="aurora"] body:before{background:radial-gradient(45% 50% at 18% 22%,rgba(90,120,255,.34),transparent 70%),radial-gradient(40% 46% at 82% 30%,rgba(255,70,150,.24),transparent 72%),radial-gradient(46% 46% at 55% 86%,rgba(40,220,190,.2),transparent 70%);animation:glassDrift 26s ease-in-out infinite alternate}
+html[data-bg="nebula"] body:before{background:radial-gradient(38% 44% at 70% 18%,rgba(150,80,255,.34),transparent 72%),radial-gradient(44% 40% at 22% 72%,rgba(30,160,255,.26),transparent 74%),radial-gradient(30% 36% at 82% 88%,rgba(255,140,60,.18),transparent 70%);animation:glassDrift 32s ease-in-out infinite alternate-reverse}
+html[data-bg="tide"] body:before{background:radial-gradient(50% 40% at 30% 80%,rgba(0,200,190,.3),transparent 72%),radial-gradient(46% 42% at 80% 22%,rgba(60,120,255,.3),transparent 70%),radial-gradient(30% 34% at 50% 50%,rgba(180,80,255,.16),transparent 70%);animation:glassDrift 30s ease-in-out infinite alternate}
+html[data-bg="ember"] body:before{background:radial-gradient(46% 44% at 22% 26%,rgba(255,90,60,.28),transparent 72%),radial-gradient(42% 40% at 78% 62%,rgba(255,170,40,.22),transparent 72%),radial-gradient(36% 40% at 52% 92%,rgba(200,40,110,.2),transparent 70%);animation:glassDrift 28s ease-in-out infinite alternate-reverse}
+html[data-bg="mono"] body:before{background:radial-gradient(44% 46% at 30% 28%,rgba(255,255,255,.10),transparent 72%),radial-gradient(40% 42% at 76% 74%,rgba(150,170,210,.12),transparent 72%);animation:glassDrift 34s ease-in-out infinite alternate}
+@keyframes glassDrift{0%{transform:translate3d(-3%,-2%,0) scale(1)}50%{transform:translate3d(2%,3%,0) scale(1.08)}100%{transform:translate3d(4%,-3%,0) scale(1.03)}}
+
+html.glass .sidebar{background:var(--glass-bg);backdrop-filter:blur(18px) saturate(140%);-webkit-backdrop-filter:blur(18px) saturate(140%);border-right:1px solid var(--glass-line)}
+html.glass .topbar,html.glass .panel,html.glass .settings-card,html.glass .dialog,html.glass .stat-card,html.glass .library-card,html.glass .app-tile,html.glass .web-card{background:var(--glass-bg);backdrop-filter:blur(14px) saturate(130%);-webkit-backdrop-filter:blur(14px) saturate(130%);border-color:var(--glass-line)}
+html.glass .mini-player{background:var(--glass-bg);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px)}
+html.no-background body:before{opacity:0!important;animation:none!important}
+html.reduced-motion body:before{animation:none!important}
