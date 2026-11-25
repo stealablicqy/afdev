@@ -29,7 +29,7 @@ const WISP_DEFAULT = "wss://anura.pro/wisp/";
 // The stored value wins, so a different host can be pasted in Settings.
 const BARE_KEY = "af.go.bare";
 const BARE_DEFAULT = "https://af-wisp-relay.jaay847.workers.dev/bare/";
-const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=4`;
+const BARE_TRANSPORT = `${asset("transport/bare.mjs")}?v=5`;
 
 function readBareUrl() {
 	let stored = "";
@@ -1185,7 +1185,7 @@ async function initScramjet() {
 			// them inside the service worker.
 			codec: { encode: sjEncode, decode: sjDecode },
 			flags: {
-				serviceworkers: true,
+				serviceworkers: false,
 				syncxhr: false,
 				strictRewrites: true,
 				rewriterLogs: false,
