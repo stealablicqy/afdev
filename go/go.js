@@ -2358,6 +2358,16 @@ async function boot() {
 			stage("scramjet:failed");
 		}
 
+		// On a fresh origin Scramjet's empty-database recovery unregisters its own
+		// service worker. Re-seat both workers after init so a first visit is not
+		// left with a controller but no interception.
+		try {
+			await registerWorkers();
+			stage("workers:reseat");
+		} catch (error) {
+			console.warn("worker re-seat failed:", error?.message || error);
+		}
+
 		state.engines.ultraviolet = Boolean(globalThis.Ultraviolet);
 		if (state.engines.ultraviolet) stage("ultraviolet:ready");
 	}
