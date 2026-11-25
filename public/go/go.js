@@ -484,6 +484,8 @@ function parseCommand(raw) {
 	const match = /^!([a-z]+)\s+(.+)$/i.exec(value);
 	if (!match) return { url: value, engine: null, explicit: false };
 	const key = match[1].toLowerCase();
+	if (key === "wisp") return { url: match[2].trim(), engine: null, explicit: false, transport: "wisp" };
+	if (key === "barex") return { url: match[2].trim(), engine: null, explicit: false, transport: "bare" };
 	if (!(key in ENGINE_ALIAS)) return { url: value, engine: null, explicit: false };
 	return { url: match[2].trim(), engine: ENGINE_ALIAS[key], explicit: true };
 }
@@ -594,8 +596,28 @@ function engineFor(url) {
 	return firstUsableEngine();
 }
 
+// Scramjet's default codec is encodeURIComponent. On a CDN subpath the SW
+// decodes %2F back to "/", and the browser collapses "//" while rewriting the
+// frame URL — the destination arrives as "https:/site/" and 404s. A base64url
+// codec has no slashes at all, so the path survives every hop. Scramjet
+// stringifies these functions into its service worker, so both must be
+// self-contained and use only globals available in a worker.
+function sjEncode(url) {
+	const bytes = new TextEncoder().encode(String(url || ""));
+	let binary = "";
+	for (const byte of bytes) binary += String.fromCharCode(byte);
+	return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function sjDecode(text) {
+	const padded = String(text || "").replace(/-/g, "+").replace(/_/g, "/");
+	const binary = atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+	const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+	return new TextDecoder().decode(bytes);
+}
+
 function proxyUrl(tab, url) {
-	if (tab.engine === "scramjet" || tab.engine === "bare") return SJ_PREFIX + encodeURIComponent(url);
+	if (tab.engine === "scramjet" || tab.engine === "bare") return SJ_PREFIX + sjEncode(url);
 	if (tab.engine === "ultraviolet") {
 		return UV_PREFIX + globalThis.Ultraviolet.codec.xor.encode(url);
 	}
@@ -1102,6 +1124,9 @@ async function initScramjet() {
 		new ScramjetController({
 			prefix: SJ_PREFIX,
 			files: SJ_FILES,
+			// Must be self-contained: Scramjet stores these as strings and evals
+			// them inside the service worker.
+			codec: { encode: sjEncode, decode: sjDecode },
 			flags: {
 				serviceworkers: false,
 				syncxhr: false,
@@ -1362,7 +1387,7 @@ function decodeFrameUrl(tab) {
 		const prefix = location.origin + SJ_PREFIX;
 		if (!href.startsWith(prefix)) return "";
 		try {
-			return decodeURIComponent(href.slice(prefix.length).split("#")[0]);
+			return sjDecode(href.slice(prefix.length).split("#")[0]);
 		} catch {
 			return "";
 		}
@@ -1583,6 +1608,19 @@ function navigate(raw) {
 		else if (parsed.engine === null) tab.manualEngine = null;
 	}
 
+	if (parsed.transport && parsed.transport !== TRANSPORT_MODE) {
+		TRANSPORT_MODE = parsed.transport;
+		reseatTransport().then(
+			() => loadInTab(tab, url),
+			(error) => {
+				console.warn("transport override failed:", error?.message || error);
+				TRANSPORT_MODE = "bare";
+				loadInTab(tab, url);
+			}
+		);
+		return;
+	}
+
 	loadInTab(tab, url);
 	updateHomeVisibility();
 }
@@ -1632,7 +1670,8 @@ function setTabEngine(tab, engine, options) {
 
 	clearTimeout(tab.watchdog);
 	tab.engine = engine;
-	TRANSPORT_MODE = engine === "bare" ? "bare" : "wisp";
+	// Engine choice never flips the transport. Every lane rides the Bare server
+	// by default; Wisp is a deliberate override, not a side effect of a button.
 	tab.manualEngine = opts.manual ? engine : null;
 	tab.sjFrame = null;
 	tab.retries = 0;
