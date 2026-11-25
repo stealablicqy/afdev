@@ -619,7 +619,7 @@ function sjDecode(text) {
 function proxyUrl(tab, url) {
 	if (tab.engine === "scramjet" || tab.engine === "bare") return SJ_PREFIX + sjEncode(url);
 	if (tab.engine === "ultraviolet") {
-		return UV_PREFIX + globalThis.Ultraviolet.codec.xor.encode(url);
+		return UV_PREFIX + self.__uv$config.encodeUrl(url);
 	}
 	return null;
 }
@@ -1410,7 +1410,7 @@ function decodeFrameUrl(tab) {
 	const prefix = location.origin + UV_PREFIX;
 	if (!href.startsWith(prefix)) return "";
 	try {
-		return globalThis.Ultraviolet.codec.xor.decode(href.slice(prefix.length).split("#")[0]);
+		return self.__uv$config.decodeUrl(href.slice(prefix.length).split("#")[0]);
 	} catch {
 		return "";
 	}

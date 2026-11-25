@@ -22,13 +22,35 @@
     return origin + '/uv/';
   }
 
+  // Slash-free codec. The stock XOR codec leaves %2F in the path, and a CDN
+  // subpath turns those into real slashes while the worker decodes, collapsing
+  // "https://" into "https:/" and 404ing the destination. base64url has no
+  // slash to collapse.
+  function encodeUrl(text) {
+    if (!text) return text;
+    var bytes = new TextEncoder().encode(String(text));
+    var raw = '';
+    for (var i = 0; i < bytes.length; i += 1) raw += String.fromCharCode(bytes[i]);
+    return btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  }
+
+  function decodeUrl(text) {
+    if (!text) return text;
+    var raw = String(text).replace(/-/g, '+').replace(/_/g, '/');
+    var padded = raw + '='.repeat((4 - (raw.length % 4)) % 4);
+    var binary = atob(padded);
+    var bytes = new Uint8Array(binary.length);
+    for (var i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+    return new TextDecoder().decode(bytes);
+  }
+
   var dir = uvDir();                        // absolute, ends with "/uv/"
   var dirPath = new URL(dir).pathname;      // path only, ends with "/uv/"
 
   self.__uv$config = {
     prefix: dirPath + 'service/',           // <app root>/uv/service/
-    encodeUrl: Ultraviolet.codec.xor.encode,
-    decodeUrl: Ultraviolet.codec.xor.decode,
+    encodeUrl: encodeUrl,
+    decodeUrl: decodeUrl,
     handler: dir + 'uv.handler.js',
     client: dir + 'uv.client.js',
     bundle: dir + 'uv.bundle.js',
